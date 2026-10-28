@@ -108,6 +108,8 @@ docker compose run --rm dbt source freshness  # a silver está sendo atualizada?
 | Camada | Schema no Postgres | O que tem |
 | --- | --- | --- |
 | Staging | `staging` | `stg_clima_diario`, `stg_municipios`: nomes e tipos padronizados (views) |
+| Intermediate | `intermediate` | `int_clima_metricas`: médias e acumulados móveis de 7 dias (view) |
+| Gold | `gold` | Modelo estrela: `dim_municipio`, `dim_data`, `fct_clima_diario` (incremental) e `agg_clima_mensal` (resumo mensal com anomalia de temperatura) |
 | Falhas de teste | `testes_falhas` | as linhas que reprovaram em cada teste, para investigar no banco |
 
 
@@ -143,6 +145,8 @@ docker compose run --rm dbt source freshness  # a silver está sendo atualizada?
 - **Silver do clima (`silver/clima_diario`):** nomes em português com a unidade no nome (`temp_max_c`, `chuva_mm`), uma linha por município e dia (fica a extração mais recente), nome do município e região do cadastro, amplitude térmica e flags de qualidade (`dado_completo`, `temp_suspeita`) em vez de apagar linhas. O modo incremental reprocessa só as partições (ano, mês, UF) que receberam dados novos no bronze, com sobrescrita dinâmica de partições.
 - **Silver no Postgres (`silver.clima_diario`, `silver.municipios`):** o Spark grava via JDBC. No modo incremental, as partições alteradas vão para uma tabela de staging e são trocadas no destino numa única transação (DELETE + INSERT): se algo falhar, o rollback deixa a tabela como estava. A carga completa usa TRUNCATE, preservando os índices, e o banco garante a chave única município + dia.
 - **Testes genéricos próprios no dbt** (`combinacao_unica`, `entre`) em vez de instalar um pacote só para eles: poucas linhas, sem dependência externa. Falhas ficam gravadas no schema `testes_falhas` (`store_failures`), e a faixa de temperatura é aviso (não erro), porque a silver já marca o dado como suspeito.
+- **Fato incremental com janela móvel:** `fct_clima_diario` processa só o que a silver reprocessou. Como a média móvel de 7 dias de um dia depende dos 6 anteriores, quando um dia muda eu reprocesso também os 6 seguintes do município. Um teste comparando o incremental com uma reconstrução completa (`--full-refresh`) pegou esse caso; agora os dois dão resultado idêntico. O teste singular `assert_fato_tem_todas_as_linhas_da_staging` garante que o incremental não perde nem sobra linhas.
+- **Anomalia mensal sobre histórico curto:** `agg_clima_mensal` compara cada mês com a média do mesmo mês no histórico do município. Com dados desde 2025, essa média usa 1 ou 2 anos (a coluna `anos_na_media_historica` deixa isso explícito); na climatologia o padrão são 30 anos.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças

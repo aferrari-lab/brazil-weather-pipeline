@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: int_clima_metricas
+    description: >
+      Clima diário com métricas móveis de 7 dias de calendário por município
+      (média de temperatura, chuva acumulada) e a marcação de dia de chuva.
+    columns:
+      - name: temp_media_movel_7d_c
+        description: Média da temperatura média nos últimos 7 dias de calendário, em °C.
+      - name: chuva_acumulada_7d_mm
+        description: Chuva acumulada nos últimos 7 dias de calendário, em mm.
+      - name: dias_na_janela_7d
+        description: Dias com dado dentro da janela de 7 dias (7 = janela completa).
+        tests:
+          - entre:
+              arguments: {minimo: 0, maximo: 7}
+      - name: dia_de_chuva
+        description: Verdadeiro quando choveu pelo menos o limite da variável limite_dia_chuva_mm (1 mm).

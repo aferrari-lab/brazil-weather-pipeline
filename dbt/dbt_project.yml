@@ -18,7 +18,23 @@ models:
     staging:
       +schema: staging
       +materialized: view
-    # Intermediate e marts (as próximas tarefas) entram aqui.
+    # Intermediate: cálculos reaproveitados pelos marts (médias móveis etc.).
+    # Também como views: são passos do caminho, não tabelas para consulta direta.
+    intermediate:
+      +schema: intermediate
+      +materialized: view
+    # Marts (gold): o modelo estrela que o dashboard e a análise consomem. Como
+    # tabelas, as consultas ficam rápidas e não recalculam nada a cada acesso.
+    marts:
+      +schema: gold
+      +materialized: table
+
+vars:
+  # Início do histórico do projeto (o mesmo da ingestão do Open-Meteo).
+  data_inicio: "2025-01-01"
+  # Chuva a partir da qual o dia conta como "dia de chuva" (critério usual em
+  # climatologia).
+  limite_dia_chuva_mm: 1.0
 
 tests:
   brazil_weather:

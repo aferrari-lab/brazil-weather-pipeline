@@ -1,0 +1,102 @@
+version: 2
+
+models:
+  - name: dim_municipio
+    description: Dimensão de municípios. Uma linha por município.
+    columns:
+      - name: codigo_ibge
+        description: Código IBGE do município. Chave da dimensão.
+        tests: [unique, not_null]
+      - name: municipio
+        description: Nome do município.
+      - name: uf_sigla
+        description: Sigla da UF.
+      - name: regiao
+        description: Grande região do IBGE.
+      - name: latitude
+        description: Latitude da sede, em graus.
+      - name: longitude
+        description: Longitude da sede, em graus.
+
+  - name: dim_data
+    description: Dimensão de datas, do início do histórico até hoje (inclusive dias sem dado).
+    columns:
+      - name: data
+        description: O dia. Chave da dimensão.
+        tests: [unique, not_null]
+      - name: mes
+        tests:
+          - entre:
+              arguments: {minimo: 1, maximo: 12}
+      - name: dia_semana
+        description: Dia da semana ISO (1 = segunda, 7 = domingo).
+        tests:
+          - entre:
+              arguments: {minimo: 1, maximo: 7}
+      - name: estacao
+        description: Estação meteorológica do hemisfério sul.
+        tests:
+          - accepted_values:
+              arguments:
+                values: [Verão, Outono, Inverno, Primavera]
+
+  - name: fct_clima_diario
+    description: >
+      Fato do clima diário: uma linha por município e dia, com as medidas, as
+      métricas móveis de 7 dias e as flags de qualidade. Carga incremental.
+    tests:
+      - combinacao_unica:
+          arguments:
+            colunas: [codigo_ibge, data]
+    columns:
+      - name: codigo_ibge
+        description: Município (liga com dim_municipio).
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_municipio')
+                field: codigo_ibge
+      - name: data
+        description: Dia (liga com dim_data).
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_data')
+                field: data
+      - name: temp_media_movel_7d_c
+        description: Média móvel de 7 dias da temperatura média, em °C.
+      - name: chuva_acumulada_7d_mm
+        description: Chuva acumulada nos últimos 7 dias, em mm.
+        tests:
+          - entre:
+              arguments: {minimo: 0}
+      - name: dia_de_chuva
+        description: Choveu pelo menos 1 mm no dia.
+      - name: processado_em
+        description: Quando a linha foi processada na silver. É o que guia a carga incremental.
+        tests: [not_null]
+
+  - name: agg_clima_mensal
+    description: >
+      Resumo mensal por município, com a anomalia de temperatura do mês em relação
+      à média do mesmo mês no histórico do município. Recalculado inteiro a cada execução.
+    tests:
+      - combinacao_unica:
+          arguments:
+            colunas: [codigo_ibge, ano, mes]
+    columns:
+      - name: dias_com_dado
+        description: Dias do mês com dado no fato.
+        tests:
+          - entre:
+              arguments: {minimo: 1, maximo: 31}
+      - name: dias_de_chuva
+        description: Dias do mês com pelo menos 1 mm de chuva.
+      - name: anomalia_temp_c
+        description: >
+          Temperatura média do mês menos a média do mesmo mês no histórico do
+          município, em °C. Positivo = mais quente que o normal.
+      - name: anos_na_media_historica
+        description: Quantos anos entraram na média histórica do mês (limitação do histórico curto).
