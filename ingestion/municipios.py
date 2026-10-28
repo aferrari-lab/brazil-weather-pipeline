@@ -7,13 +7,14 @@ Executar (com o .venv ativo, na raiz do projeto):
 import io
 import logging
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+from ingestion.lake import ConfigLake, gravar_parquet
 
 # Uso logging em vez de print: cada mensagem sai com horário e nível (INFO,
 # WARNING, ERROR), e o Airflow captura esses logs quando o código rodar numa DAG.
@@ -88,9 +89,9 @@ COLUNAS_MUNICIPIOS = [
     "_extraido_em",
 ]
 
-# Por enquanto eu salvo localmente, na pasta data/ (fora do Git). No passo 2 da
-# Fase 2, este destino passa a ser o data lake.
-CAMINHO_MUNICIPIOS = Path("data/municipios.parquet")
+# Caminho da tabela dentro do lake. Ela fica na camada bronze, junto dos outros
+# dados de entrada do pipeline, e é a referência para buscar o clima.
+CAMINHO_MUNICIPIOS = "bronze/municipios/municipios.parquet"
 
 
 def criar_sessao(tentativas: int = 3, backoff: float = 1.0) -> requests.Session:
@@ -398,18 +399,19 @@ def montar_municipios(sessao: requests.Session | None = None) -> pd.DataFrame:
     return df
 
 
-def salvar_municipios(df: pd.DataFrame, caminho: Path = CAMINHO_MUNICIPIOS) -> Path:
-    """Grava a tabela de municípios em Parquet e devolve o caminho do arquivo."""
-    # Crio a pasta se ela ainda não existir. O parents=True cria também as pastas
-    # intermediárias, e o exist_ok=True evita erro se ela já existir.
-    caminho.parent.mkdir(parents=True, exist_ok=True)
-
-    # Gravar sempre o arquivo inteiro, sobrescrevendo, deixa a carga idempotente:
-    # rodar duas vezes dá o mesmo resultado, sem duplicar linhas.
-    df.to_parquet(caminho, index=False)
-
-    logger.info("Tabela de municípios salva em %s (%d linhas).", caminho, len(df))
-    return caminho
+def salvar_municipios(
+    df: pd.DataFrame,
+    config: ConfigLake | None = None,
+    caminho: str = CAMINHO_MUNICIPIOS,
+) -> str:
+    """Grava a tabela de municípios no lake e devolve o caminho completo."""
+    # Delego a gravação ao módulo do lake, que sabe se conectar ao RustFS. Gravo
+    # sempre o arquivo inteiro, sobrescrevendo o anterior, o que deixa a carga
+    # idempotente: rodar duas vezes dá o mesmo resultado, sem duplicar linhas.
+    # Recebo a config como parâmetro para os testes poderem usar uma pasta local.
+    destino = gravar_parquet(df, caminho, config)
+    logger.info("Tabela de municípios salva em %s.", destino)
+    return destino
 
 
 if __name__ == "__main__":

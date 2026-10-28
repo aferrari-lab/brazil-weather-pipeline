@@ -12,7 +12,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | Fase | Entregável | Status |
 | --- | --- | --- |
 | 1. Fundação | Ambiente sobe com um comando | ✅ |
-| 2. Ingestão bronze | Dados brutos no lake, carga incremental | ⏳ |
+| 2. Ingestão bronze | Dados brutos no lake, carga incremental | 🟡 em andamento |
 | 3. Silver com PySpark | Tabelas limpas + comparativo de performance | ⏳ |
 | 4. Modelagem com dbt | Modelo dimensional testado | ⏳ |
 | 5. Orquestração com Airflow | Pipeline diário automático | ⏳ |
@@ -39,7 +39,7 @@ Pré-requisitos: Docker Desktop, Python 3.11+ e Git.
 
 ```bash
 # 1. Variáveis de ambiente
-cp .env.example .env        # depois troque as senhas e o AIRFLOW_JWT_SECRET
+copy .env.example .env      # Windows (Linux/Mac: cp .env.example .env); depois troque as senhas e o AIRFLOW_JWT_SECRET
 
 # 2. Ambiente Python local (lint, testes, notebooks)
 python -m venv .venv
@@ -62,6 +62,15 @@ docker compose ps           # aguarde todos ficarem "healthy"
 
 Com `make` instalado (Git Bash/WSL): `make setup`, `make up`, `make down`, `make lint`, `make test`, `make help`.
 
+## Ingestão
+
+Com o ambiente no ar (`docker compose up -d`) e o `.venv` ativo:
+
+```bash
+python -m ingestion.municipios   # tabela de municípios → s3://lake/bronze/municipios/
+pytest -q                        # testes, sem precisar de internet nem do lake
+```
+
 ## Estrutura
 
 ```
@@ -70,7 +79,7 @@ Com `make` instalado (Git Bash/WSL): `make setup`, `make up`, `make down`, `make
 │   ├── plugins/
 │   ├── config/
 │   └── logs/          # gerado em runtime, fora do Git
-├── ingestion/         # extratores IBGE e Open-Meteo (Fase 2)
+├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas)
 ├── spark/             # jobs PySpark bronze → silver (Fase 3)
 ├── dbt/               # projeto dbt silver → gold (Fase 4)
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops

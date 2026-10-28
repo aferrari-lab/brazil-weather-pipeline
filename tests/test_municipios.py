@@ -9,7 +9,9 @@ from datetime import UTC, datetime
 import pandas as pd
 import pytest
 
+from ingestion.lake import ConfigLake, ler_parquet
 from ingestion.municipios import (
+    CAMINHO_MUNICIPIOS,
     combinar_municipios,
     salvar_municipios,
     transformar_coordenadas,
@@ -153,10 +155,12 @@ def test_validacao_final_barra_cobertura_baixa():
         validar_municipios(df)
 
 
-def test_salvar_grava_parquet_e_le_de_volta(tmp_path):
-    # tmp_path é uma pasta temporária que o pytest cria e apaga sozinho.
+def test_salvar_grava_no_lake_e_le_de_volta(tmp_path):
+    # Aponto o lake para uma pasta temporária, que o pytest cria e apaga sozinho.
+    lake_local = ConfigLake(raiz=str(tmp_path / "lake"))
     df = combinar_municipios(*_tabelas_exemplo())
-    caminho = salvar_municipios(df, tmp_path / "saida" / "municipios.parquet")
 
-    lido = pd.read_parquet(caminho)
+    salvar_municipios(df, lake_local)
+    lido = ler_parquet(CAMINHO_MUNICIPIOS, lake_local)
+
     assert lido["codigo_ibge"].tolist() == df["codigo_ibge"].tolist()
