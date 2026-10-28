@@ -134,8 +134,12 @@ def ler_parquet(
     caminho: str,
     config: ConfigLake | None = None,
     filtros: list[list[tuple[str, str, Any]]] | None = None,
+    schema: Any = None,
 ) -> pd.DataFrame:
     """Lê um arquivo ou uma pasta particionada de Parquet do lake.
+
+    schema: schema do pyarrow para ler uma pasta com vários arquivos de forma
+    consistente, mesmo que algum arquivo tenha gravado uma coluna toda vazia.
 
     filtros: lê só as partições pedidas, no formato do pyarrow. Uma lista de
     condições "E" dentro de uma lista "OU", ex.: [[("ano", "=", 2025), ("mes", "=", 1)]].
@@ -145,7 +149,9 @@ def ler_parquet(
 
     # Com filtros, o pyarrow nem abre as pastas que não interessam. Isso importa
     # quando o lake tiver centenas de partições e eu só quiser algumas.
-    df = pd.read_parquet(origem, storage_options=config.storage_options, filters=filtros)
+    df = pd.read_parquet(
+        origem, storage_options=config.storage_options, filters=filtros, schema=schema
+    )
     logger.info("Lidas %d linhas de %s", len(df), origem)
     return df
 

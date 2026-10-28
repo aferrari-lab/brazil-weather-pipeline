@@ -27,6 +27,7 @@ from ingestion.lake import (
     ler_parquet,
     mesclar_parquet,
 )
+from ingestion.log_cargas import Execucao, registrar_carga
 from ingestion.municipios import CAMINHO_MUNICIPIOS, criar_sessao
 
 logger = logging.getLogger(__name__)
@@ -306,6 +307,7 @@ def carregar_clima_uf(
     config: ConfigLake,
     pausa_segundos: float = PAUSA_ENTRE_LOTES_SEGUNDOS,
     reprocessar: bool = False,
+    execucao: Execucao | None = None,
 ) -> int:
     """Busca e grava o clima que falta para os municípios de uma UF.
 
@@ -365,6 +367,10 @@ def carregar_clima_uf(
             lote = grupo.iloc[posicao : posicao + tamanho]
             extraido_em = datetime.now(UTC)
             respostas = extrair_clima(lote, inicio_grupo, fim, sessao)
+            # Conto a chamada logo depois de feita, para o log registrar até as
+            # chamadas de um lote que falhar mais adiante.
+            if execucao:
+                execucao.chamadas_api += 1
             df = transformar_clima(respostas, lote, extraido_em)
             validar_clima(df, len(lote), inicio_grupo, fim)
 
@@ -374,6 +380,8 @@ def carregar_clima_uf(
             atualizar_checkpoint(df, config)
 
             total += len(df)
+            if execucao:
+                execucao.linhas_novas += len(df)
             logger.info("%s: lote %d/%d gravado (%d linhas).", uf, numero, n_lotes, len(df))
 
     return total
@@ -405,27 +413,44 @@ def carregar_clima(
             f"UF(s) não encontrada(s) na tabela de municípios: {sorted(desconhecidas)}"
         )
 
-    for uf in ufs:
-        municipios_uf = municipios[municipios["uf_sigla"].astype(str) == uf]
-        municipios_uf = municipios_uf.sort_values("codigo_ibge")
-        if limite:
-            # Modo de teste: só as primeiras N cidades da UF.
-            municipios_uf = municipios_uf.head(limite)
+    parametros = {
+        "ufs": ufs,
+        "inicio": inicio,
+        "fim": fim,
+        "limite": limite,
+        "reprocessar": reprocessar,
+    }
+    # Tudo o que acontece dentro do "with" fica registrado no log de execuções,
+    # inclusive quando a carga termina em erro ou no limite da API.
+    with registrar_carga("clima", parametros, config) as execucao:
+        for uf in ufs:
+            municipios_uf = municipios[municipios["uf_sigla"].astype(str) == uf]
+            municipios_uf = municipios_uf.sort_values("codigo_ibge")
+            if limite:
+                # Modo de teste: só as primeiras N cidades da UF.
+                municipios_uf = municipios_uf.head(limite)
 
-        try:
-            linhas = carregar_clima_uf(
-                municipios_uf, inicio, fim, sessao, config, reprocessar=reprocessar
-            )
-        except requests.exceptions.RetryError:
-            # As tentativas se esgotaram, o que costuma ser o limite diário da API.
-            # O que já foi gravado está salvo no checkpoint: é só rodar de novo depois.
-            logger.error(
-                "%s: limite da API atingido. O progresso foi salvo; rode de novo mais tarde "
-                "que a carga continua de onde parou.",
-                uf,
-            )
-            raise
-        logger.info("%s concluída: %d linha(s) nova(s) em %s.", uf, linhas, CAMINHO_CLIMA)
+            try:
+                linhas = carregar_clima_uf(
+                    municipios_uf,
+                    inicio,
+                    fim,
+                    sessao,
+                    config,
+                    reprocessar=reprocessar,
+                    execucao=execucao,
+                )
+            except requests.exceptions.RetryError:
+                # As tentativas se esgotaram, o que costuma ser o limite diário da
+                # API. O que já foi gravado está salvo no checkpoint: é só rodar de
+                # novo depois.
+                logger.error(
+                    "%s: limite da API atingido. O progresso foi salvo; rode de novo "
+                    "mais tarde que a carga continua de onde parou.",
+                    uf,
+                )
+                raise
+            logger.info("%s concluída: %d linha(s) nova(s) em %s.", uf, linhas, CAMINHO_CLIMA)
 
 
 def _ler_argumentos() -> argparse.Namespace:

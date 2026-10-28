@@ -14,7 +14,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ingestion.lake import ConfigLake, gravar_parquet
+from ingestion.lake import ConfigLake, carregar_config, gravar_parquet
+from ingestion.log_cargas import registrar_carga
 
 # Uso logging em vez de print: cada mensagem sai com horário e nível (INFO,
 # WARNING, ERROR), e o Airflow captura esses logs quando o código rodar numa DAG.
@@ -422,7 +423,12 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # Monto a tabela final (IBGE + coordenadas), valido e salvo em Parquet.
-    municipios = montar_municipios()
-    salvar_municipios(municipios)
+    # Monto a tabela final (IBGE + coordenadas), valido e salvo no lake. O "with"
+    # registra a execução no log de cargas, termine ela bem ou mal.
+    config = carregar_config()
+    with registrar_carga("municipios", {}, config) as execucao:
+        municipios = montar_municipios()
+        execucao.chamadas_api = 2  # uma para o IBGE, outra para as coordenadas
+        salvar_municipios(municipios, config)
+        execucao.linhas_novas = len(municipios)
     logger.info("Amostra:\n%s", municipios.head())
