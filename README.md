@@ -12,8 +12,8 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | Fase | Entregável | Status |
 | --- | --- | --- |
 | 1. Fundação | Ambiente sobe com um comando | ✅ |
-| 2. Ingestão bronze | Dados brutos no lake, carga incremental | 🟡 em andamento |
-| 3. Silver com PySpark | Tabelas limpas + comparativo de performance | ⏳ |
+| 2. Ingestão bronze | Dados brutos no lake, carga incremental | ✅ código pronto (carga dos dados em andamento) |
+| 3. Silver com PySpark | Tabelas limpas + comparativo de performance | 🟡 em andamento |
 | 4. Modelagem com dbt | Modelo dimensional testado | ⏳ |
 | 5. Orquestração com Airflow | Pipeline diário automático | ⏳ |
 | 6. Qualidade e observabilidade | Painel de saúde do pipeline | ⏳ |
@@ -26,7 +26,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | --- | --- |
 | Infra | Docker Compose |
 | Data lake | RustFS (S3 local) |
-| Processamento | PySpark |
+| Processamento | PySpark 3.5.6 (em container Docker) |
 | Warehouse | Postgres 16 |
 | Transformação | dbt |
 | Orquestração | Apache Airflow 3 (LocalExecutor) |
@@ -74,6 +74,19 @@ python -m ingestion.clima --uf SP --reprocessar --inicio 2025-03-01 --fim 2025-0
 pytest -q                        # testes, sem precisar de internet nem do lake
 ```
 
+## Spark
+
+O Spark roda num container Docker, sob demanda (não sobe com `docker compose up`). A imagem é a oficial do Apache Spark com os conectores do S3 (para o lake) e do Postgres.
+
+```bash
+docker compose build spark                                   # 1ª vez: constrói a imagem
+docker compose run --rm spark                                # job de teste: lê o bronze do lake
+docker compose run --rm spark /opt/spark/bin/spark-submit teste_bronze.py   # o mesmo, explícito
+docker compose run --rm spark /opt/spark/bin/pyspark         # PySpark interativo
+```
+
+Os jobs ficam em `spark/jobs/` e são editados normalmente no VS Code: a pasta é montada dentro do container.
+
 ## Estrutura
 
 ```
@@ -83,7 +96,7 @@ pytest -q                        # testes, sem precisar de internet nem do lake
 │   ├── config/
 │   └── logs/          # gerado em runtime, fora do Git
 ├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas), clima.py (Open-Meteo)
-├── spark/             # jobs PySpark bronze → silver (Fase 3)
+├── spark/             # Dockerfile do Spark e jobs PySpark em spark/jobs/ (Fase 3)
 ├── dbt/               # projeto dbt silver → gold (Fase 4)
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops
 ├── notebooks/         # exploração
@@ -102,6 +115,7 @@ pytest -q                        # testes, sem precisar de internet nem do lake
 - **RustFS no lugar do MinIO:** a MinIO parou de publicar imagens da edição comunitária em 2025 e o projeto foi arquivado em 2026. O RustFS é compatível com a API S3, então o código usa `boto3`/`s3fs` normalmente e trocar por AWS S3 depois é só mudar o endpoint.
 - **Carga incremental com checkpoint:** o clima é buscado só a partir do último dia válido de cada município (`controle/checkpoint_clima.parquet`). A gravação mescla com o que já existe pela chave município + dia, então a carga é incremental e idempotente, e retoma de onde parou se o limite da API for atingido.
 - **Log de execuções:** cada carga grava uma linha em `controle/log_cargas/` (início, fim, linhas novas, chamadas à API e status: `sucesso`, `limite_api` ou `erro`), mesmo quando falha. Cada execução grava seu próprio arquivo, então cargas simultâneas nunca sobrescrevem o log uma da outra.
+- **Spark em Docker:** rodar o Spark direto no Windows exige Java, `winutils` do Hadoop e variáveis de ambiente. No container, funciona igual em qualquer máquina e já fica na mesma rede do lake e do Postgres. Os conectores (hadoop-aws, AWS SDK, JDBC do Postgres) são baixados na imagem, com versões casadas com o Hadoop 3.3.4 do Spark 3.5.6.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças

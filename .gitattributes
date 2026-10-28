@@ -3,3 +3,5 @@
 Makefile text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+# Dockerfile: com fim de linha do Windows (CRLF), as continuações de linha quebram o build
+Dockerfile text eol=lf

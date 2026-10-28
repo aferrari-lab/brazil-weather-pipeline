@@ -98,6 +98,25 @@ services:
         exit 1
     restart: "no"
 
+  # Spark sob demanda: não sobe com "docker compose up". Cada job roda num
+  # container que nasce e morre com ele:  docker compose run --rm spark
+  spark:
+    build: ./spark
+    image: brazil-weather-spark:3.5.6
+    profiles: ["spark"]
+    env_file: .env
+    environment:
+      # Dentro da rede do Docker o lake é "lake:9000", não "localhost:9000".
+      S3_ENDPOINT_URL: http://lake:9000
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+    depends_on:
+      lake:
+        condition: service_started
+    # Job padrão: o teste de leitura do bronze. Outros jobs são passados no "run".
+    command: ["/opt/spark/bin/spark-submit", "--driver-memory", "2g", "teste_bronze.py"]
+
   airflow-init:
     <<: *airflow-common
     environment:

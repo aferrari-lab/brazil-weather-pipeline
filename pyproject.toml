@@ -17,3 +17,7 @@ testpaths = ["tests"]
 # Coloco a raiz do projeto no caminho de importação, para os testes acharem
 # os pacotes do projeto (ex.: ingestion) rodando só "pytest".
 pythonpath = ["."]
+
+[tool.ruff.lint.isort]
+# Módulos do próprio projeto: "comum" é o módulo compartilhado dos jobs Spark.
+known-first-party = ["ingestion", "comum"]
