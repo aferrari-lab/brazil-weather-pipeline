@@ -68,6 +68,9 @@ Com o ambiente no ar (`docker compose up -d`) e o `.venv` ativo:
 
 ```bash
 python -m ingestion.municipios   # tabela de municípios → s3://lake/bronze/municipios/
+python -m ingestion.clima --uf SP --limite 3   # teste: clima de 3 cidades de SP
+python -m ingestion.clima --uf SP              # clima de SP: busca só o que falta (incremental)
+python -m ingestion.clima --uf SP --reprocessar --inicio 2025-03-01 --fim 2025-03-31  # refaz um período
 pytest -q                        # testes, sem precisar de internet nem do lake
 ```
 
@@ -79,7 +82,7 @@ pytest -q                        # testes, sem precisar de internet nem do lake
 │   ├── plugins/
 │   ├── config/
 │   └── logs/          # gerado em runtime, fora do Git
-├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas)
+├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas), clima.py (Open-Meteo)
 ├── spark/             # jobs PySpark bronze → silver (Fase 3)
 ├── dbt/               # projeto dbt silver → gold (Fase 4)
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops
@@ -97,6 +100,7 @@ pytest -q                        # testes, sem precisar de internet nem do lake
 - **LocalExecutor:** dispensa Redis e workers Celery; suficiente para um pipeline diário em uma máquina.
 - **Conexões por variável de ambiente** (`AIRFLOW_CONN_WAREHOUSE`, `AIRFLOW_CONN_LAKE`): nenhuma credencial no código ou no banco do Airflow.
 - **RustFS no lugar do MinIO:** a MinIO parou de publicar imagens da edição comunitária em 2025 e o projeto foi arquivado em 2026. O RustFS é compatível com a API S3, então o código usa `boto3`/`s3fs` normalmente e trocar por AWS S3 depois é só mudar o endpoint.
+- **Carga incremental com checkpoint:** o clima é buscado só a partir do último dia válido de cada município (`controle/checkpoint_clima.parquet`). A gravação mescla com o que já existe pela chave município + dia, então a carga é incremental e idempotente, e retoma de onde parou se o limite da API for atingido.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças

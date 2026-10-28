@@ -11,8 +11,10 @@ from ingestion.lake import (
     ConfigLake,
     caminho_completo,
     carregar_config,
+    existe,
     gravar_parquet,
     ler_parquet,
+    mesclar_parquet,
 )
 
 
@@ -121,3 +123,30 @@ def test_config_monta_acesso_s3(monkeypatch, sem_dotenv):
     assert config.raiz == "s3://lake"
     assert config.storage_options["client_kwargs"]["endpoint_url"] == "http://lake:9000"
     assert config.storage_options["config_kwargs"]["s3"]["addressing_style"] == "path"
+
+
+def test_mesclar_preserva_dias_antigos_da_mesma_particao(lake_local):
+    # Mesma partição (2026/10/SP): primeiro os dias 1 e 2, depois os dias 3 e 4.
+    antigo = _clima("SP", 10, [20.0, 21.0])
+    novo = _clima("SP", 10, [22.0, 23.0]).assign(dia=[3, 4])
+
+    mesclar_parquet(antigo, "bronze/clima", lake_local, ["ano", "mes", "uf"], ["uf", "dia"])
+    mesclar_parquet(novo, "bronze/clima", lake_local, ["ano", "mes", "uf"], ["uf", "dia"])
+
+    lido = ler_parquet("bronze/clima", lake_local)
+    assert sorted(lido["dia"]) == [1, 2, 3, 4]
+
+
+def test_mesclar_substitui_pela_versao_nova(lake_local):
+    particoes, chave = ["ano", "mes", "uf"], ["uf", "dia"]
+    mesclar_parquet(_clima("SP", 10, [20.0, 21.0]), "bronze/clima", lake_local, particoes, chave)
+    mesclar_parquet(_clima("SP", 10, [99.0]), "bronze/clima", lake_local, particoes, chave)
+
+    lido = ler_parquet("bronze/clima", lake_local).sort_values("dia")
+    assert lido["temp"].tolist() == [99.0, 21.0]  # dia 1 atualizado, dia 2 mantido
+
+
+def test_existe(lake_local):
+    assert not existe("bronze/nada.parquet", lake_local)
+    gravar_parquet(pd.DataFrame({"x": [1]}), "bronze/nada.parquet", lake_local)
+    assert existe("bronze/nada.parquet", lake_local)

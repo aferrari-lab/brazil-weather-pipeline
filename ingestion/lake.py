@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import fsspec
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -119,11 +120,83 @@ def gravar_parquet(
     return destino
 
 
-def ler_parquet(caminho: str, config: ConfigLake | None = None) -> pd.DataFrame:
-    """Lê um arquivo ou uma pasta particionada de Parquet do lake."""
+def existe(caminho: str, config: ConfigLake | None = None) -> bool:
+    """Diz se um arquivo ou pasta existe no lake."""
+    config = config or carregar_config()
+    destino = caminho_completo(caminho, config)
+    # O fsspec é a camada que o pandas usa por baixo: o mesmo código serve para
+    # o S3 e para uma pasta local (nos testes).
+    sistema, caminho_interno = fsspec.core.url_to_fs(destino, **(config.storage_options or {}))
+    return sistema.exists(caminho_interno)
+
+
+def ler_parquet(
+    caminho: str,
+    config: ConfigLake | None = None,
+    filtros: list[list[tuple[str, str, Any]]] | None = None,
+) -> pd.DataFrame:
+    """Lê um arquivo ou uma pasta particionada de Parquet do lake.
+
+    filtros: lê só as partições pedidas, no formato do pyarrow. Uma lista de
+    condições "E" dentro de uma lista "OU", ex.: [[("ano", "=", 2025), ("mes", "=", 1)]].
+    """
     config = config or carregar_config()
     origem = caminho_completo(caminho, config)
 
-    df = pd.read_parquet(origem, storage_options=config.storage_options)
+    # Com filtros, o pyarrow nem abre as pastas que não interessam. Isso importa
+    # quando o lake tiver centenas de partições e eu só quiser algumas.
+    df = pd.read_parquet(origem, storage_options=config.storage_options, filters=filtros)
     logger.info("Lidas %d linhas de %s", len(df), origem)
     return df
+
+
+def mesclar_parquet(
+    df: pd.DataFrame,
+    caminho: str,
+    config: ConfigLake | None,
+    particoes: list[str],
+    chave: list[str],
+) -> int:
+    """Junta dados novos aos que já existem nas mesmas partições e regrava.
+
+    É o que permite a carga incremental: se o lake já tem os dias 1 a 10 de um
+    mês e chegam os dias 11 a 23, a partição fica com 1 a 23. Se chegar de novo
+    um dia que já existia, a versão nova substitui a antiga (pela chave).
+    Devolve o total de linhas nas partições regravadas.
+    """
+    config = config or carregar_config()
+
+    # Descubro quais partições os dados novos tocam, ex.: (2025, 1, "SP"), e
+    # leio do lake só essas, para não carregar o lake inteiro na memória.
+    filtros = []
+    for combinacao in df[particoes].drop_duplicates().itertuples(index=False):
+        # O pyarrow não aceita números do numpy no filtro: o .item() converte cada
+        # valor para o tipo puro do Python (ex.: numpy.int64 -> int).
+        valores = [v.item() if hasattr(v, "item") else v for v in combinacao]
+        filtros.append(list(zip(particoes, ["="] * len(particoes), valores, strict=True)))
+
+    # Verifico se o caminho existe em vez de capturar o erro de leitura. Assim uma
+    # falha de rede ao ler nunca é confundida com "não há dados", o que me faria
+    # regravar a partição só com os dados novos e perder os antigos.
+    if existe(caminho, config):
+        existentes = ler_parquet(caminho, config, filtros)
+    else:
+        existentes = pd.DataFrame(columns=df.columns)
+
+    if not existentes.empty:
+        # Ao ler, o pyarrow devolve as colunas de partição como categorias. Eu as
+        # converto de volta para os tipos originais, para o concat não misturar tipos.
+        existentes = existentes.astype({coluna: df[coluna].dtype for coluna in particoes})
+        combinado = pd.concat([existentes[df.columns], df], ignore_index=True)
+    else:
+        combinado = df.copy()
+
+    # keep="last" mantém a linha que veio por último no concat, ou seja, a nova.
+    antes = len(combinado)
+    combinado = combinado.drop_duplicates(subset=chave, keep="last")
+    substituidas = antes - len(combinado)
+    if substituidas:
+        logger.info("%d linha(s) já existentes foram substituídas pela versão nova.", substituidas)
+
+    gravar_parquet(combinado, caminho, config, particoes)
+    return len(combinado)
