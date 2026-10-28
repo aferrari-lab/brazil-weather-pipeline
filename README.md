@@ -1,6 +1,6 @@
 # brazil-weather-pipeline
 
-Pipeline de engenharia de dados de ponta a ponta com o clima diário de todos os municípios brasileiros desde 2016 ([Open-Meteo](https://open-meteo.com/) + IBGE), do data lake ao dashboard e à previsão de temperatura.
+Pipeline de engenharia de dados de ponta a ponta com o clima diário de todos os municípios brasileiros desde 2025 ([Open-Meteo](https://open-meteo.com/) + IBGE), do data lake ao dashboard e à previsão de temperatura.
 
 ```
 Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → Gold (dbt + Postgres) → Metabase
