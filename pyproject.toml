@@ -14,3 +14,6 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Coloco a raiz do projeto no caminho de importação, para os testes acharem
+# os pacotes do projeto (ex.: ingestion) rodando só "pytest".
+pythonpath = ["."]
