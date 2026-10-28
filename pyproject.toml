@@ -1,0 +1,16 @@
+[project]
+name = "data-engineering-clima"
+version = "0.1.0"
+description = "Pipeline de engenharia de dados: clima diário de todos os municípios do Brasil (Open-Meteo)"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["airflow/logs", "dbt"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

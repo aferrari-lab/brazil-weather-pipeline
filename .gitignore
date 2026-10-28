@@ -1,0 +1,41 @@
+# Segredos
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Airflow
+airflow/logs/*
+!airflow/logs/.gitkeep
+airflow/config/airflow.cfg
+
+# dbt
+dbt/**/target/
+dbt/**/dbt_packages/
+dbt/**/logs/
+
+# Spark
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Dados locais (o lake fica no MinIO, não no Git)
+data/
+*.parquet
+*.csv
+*.xlsx
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
