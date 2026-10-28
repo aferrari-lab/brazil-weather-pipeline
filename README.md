@@ -3,7 +3,7 @@
 Pipeline de engenharia de dados de ponta a ponta com o clima diário de todos os municípios brasileiros desde 2016 ([Open-Meteo](https://open-meteo.com/) + IBGE), do data lake ao dashboard e à previsão de temperatura.
 
 ```
-Fontes (Open-Meteo, IBGE) → Bronze (MinIO, Parquet) → Silver (PySpark) → Gold (dbt + Postgres) → Metabase
+Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → Gold (dbt + Postgres) → Metabase
                     └──────────────── orquestrado pelo Airflow ────────────────┘
 ```
 
@@ -25,7 +25,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (MinIO, Parquet) → Silver (PySpark) → G
 | Camada | Ferramenta |
 | --- | --- |
 | Infra | Docker Compose |
-| Data lake | MinIO (S3 local) |
+| Data lake | RustFS (S3 local) |
 | Processamento | PySpark |
 | Warehouse | Postgres 16 |
 | Transformação | dbt |
@@ -54,11 +54,11 @@ docker compose ps           # aguarde todos ficarem "healthy"
 
 | Serviço | Endereço | Acesso |
 | --- | --- | --- |
-| Airflow | http://localhost:8080 | sem login (modo dev) |
-| MinIO console | http://localhost:9001 | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` |
+| Airflow | http://localhost:8080 (ou a `AIRFLOW_PORT` do `.env`) | sem login (modo dev) |
+| RustFS console | http://localhost:9001 | `LAKE_ACCESS_KEY` / `LAKE_SECRET_KEY` |
 | Postgres | `localhost:5432` | `WAREHOUSE_USER` / `WAREHOUSE_PASSWORD` |
 
-**Verificação:** no Airflow, ative e dispare a DAG `smoke_test`. Ela confirma a conexão com o Postgres e com o MinIO.
+**Verificação:** no Airflow, ative e dispare a DAG `smoke_test`. Ela confirma a conexão com o Postgres e com o lake.
 
 Com `make` instalado (Git Bash/WSL): `make setup`, `make up`, `make down`, `make lint`, `make test`, `make help`.
 
@@ -87,5 +87,20 @@ Com `make` instalado (Git Bash/WSL): `make setup`, `make up`, `make down`, `make
 - **Um Postgres, dois bancos:** `warehouse` (dados) e `airflow` (metadados), para economizar memória no ambiente local. Em produção seriam instâncias separadas.
 - **LocalExecutor:** dispensa Redis e workers Celery; suficiente para um pipeline diário em uma máquina.
 - **Conexões por variável de ambiente** (`AIRFLOW_CONN_WAREHOUSE`, `AIRFLOW_CONN_LAKE`): nenhuma credencial no código ou no banco do Airflow.
-- **MinIO:** a distribuição comunitária deixou de publicar imagens atualizadas; para estudo local atende bem. As imagens ficam configuráveis no `.env` caso eu migre para outro S3 compatível.
+- **RustFS no lugar do MinIO:** a MinIO parou de publicar imagens da edição comunitária em 2025 e o projeto foi arquivado em 2026. O RustFS é compatível com a API S3, então o código usa `boto3`/`s3fs` normalmente e trocar por AWS S3 depois é só mudar o endpoint.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
+
+## O que eu faria em produção
+
+Este projeto roda inteiro na minha máquina, com escolhas pensadas para estudo. Em um ambiente real, eu mudaria:
+
+| Componente | Aqui (local) | Em produção |
+| --- | --- | --- |
+| Data lake | RustFS (S3 local) | AWS S3, Google Cloud Storage ou Azure Blob. O RustFS ainda é jovem (release candidate) e serve bem para desenvolvimento, mas não para dados críticos. Como o código fala o protocolo S3, a troca é só o endpoint e as credenciais. |
+| Banco | Um Postgres com dois bancos (warehouse e metadados do Airflow) | Instâncias separadas e gerenciadas (RDS, Cloud SQL), com backup automático. O warehouse poderia ir para BigQuery, Snowflake ou Redshift, conforme o volume. |
+| Airflow | LocalExecutor, sem login | Serviço gerenciado (MWAA, Cloud Composer, Astronomer) ou KubernetesExecutor, com autenticação e controle de acesso por usuário. |
+| Segredos | Arquivo `.env` | Secrets Manager, Vault ou o secrets backend do próprio Airflow. |
+| Imagens | Tag `latest` em parte dos serviços | Versões fixas e atualizadas de forma controlada. |
+| Processamento | PySpark local | Spark gerenciado (EMR, Dataproc, Databricks), dimensionado pelo volume. |
+
+> Seção em evolução: será completada na Fase 8 com custos, monitoramento e segurança.

@@ -1,6 +1,6 @@
 """DAG de verificação do ambiente (Fase 1).
 
-Confirma que o Airflow alcança o warehouse (Postgres) e o lake (MinIO).
+Confirma que o Airflow alcança o warehouse (Postgres) e o lake (RustFS).
 Ative pela interface em http://localhost:8080 e dispare manualmente.
 """
 
@@ -31,7 +31,7 @@ def smoke_test():
 
         resposta = S3Hook(aws_conn_id="lake").get_conn().list_buckets()
         buckets = [b["Name"] for b in resposta["Buckets"]]
-        print(f"MinIO OK, buckets: {buckets}")
+        print(f"Lake OK, buckets: {buckets}")
         return buckets
 
     checa_warehouse() >> checa_lake()

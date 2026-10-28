@@ -1,5 +1,5 @@
 # Ambiente local do pipeline: Postgres (warehouse + metadados do Airflow),
-# MinIO (data lake S3) e Airflow 3 com LocalExecutor.
+# RustFS (data lake S3) e Airflow 3 com LocalExecutor.
 # Subir: docker compose up -d   |   Derrubar: docker compose down
 
 x-airflow-common: &airflow-common
@@ -15,7 +15,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"  # só para dev local: sem tela de login
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     AIRFLOW_CONN_WAREHOUSE: postgresql://${WAREHOUSE_USER}:${WAREHOUSE_PASSWORD}@postgres:5432/${WAREHOUSE_DB}
-    AIRFLOW_CONN_LAKE: aws://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@?endpoint_url=http%3A%2F%2Fminio%3A9000
+    AIRFLOW_CONN_LAKE: aws://${LAKE_ACCESS_KEY}:${LAKE_SECRET_KEY}@?endpoint_url=http%3A%2F%2Flake%3A9000
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
@@ -49,38 +49,52 @@ services:
       retries: 5
     restart: unless-stopped
 
-  minio:
-    image: ${MINIO_IMAGE:-minio/minio:latest}
-    command: server /data --console-address ":9001"
+  lake-perms:
+    image: alpine:3.20
+    command: chown -R 10001:10001 /data   # RustFS roda como UID 10001
+    volumes:
+      - lake_data:/data
+    restart: "no"
+
+  lake:
+    image: ${LAKE_IMAGE:-rustfs/rustfs:latest}
+    command: /data
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      RUSTFS_ACCESS_KEY: ${LAKE_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${LAKE_SECRET_KEY}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
     ports:
       - "9000:9000"   # API S3
       - "9001:9001"   # console web
     volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 10s
-      retries: 5
+      - lake_data:/data
+    depends_on:
+      lake-perms:
+        condition: service_completed_successfully
     restart: unless-stopped
 
-  minio-init:
-    image: ${MC_IMAGE:-minio/mc:latest}
+  lake-init:
+    image: amazon/aws-cli:latest
     depends_on:
-      minio:
-        condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set lake http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
-      mc mb --ignore-existing lake/$${LAKE_BUCKET} &&
-      echo 'bucket pronto'
-      "
+      lake:
+        condition: service_started
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${LAKE_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${LAKE_SECRET_KEY}
+      AWS_DEFAULT_REGION: us-east-1
       LAKE_BUCKET: ${LAKE_BUCKET}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        for i in $$(seq 1 30); do
+          aws --endpoint-url http://lake:9000 s3api head-bucket --bucket "$$LAKE_BUCKET" 2>/dev/null && echo "bucket ja existe" && exit 0
+          aws --endpoint-url http://lake:9000 s3 mb "s3://$$LAKE_BUCKET" && echo "bucket pronto" && exit 0
+          echo "aguardando o lake..."; sleep 2
+        done
+        exit 1
+    restart: "no"
 
   airflow-init:
     <<: *airflow-common
@@ -94,7 +108,7 @@ services:
     <<: *airflow-common
     command: api-server
     ports:
-      - "8080:8080"
+      - "${AIRFLOW_PORT:-8080}:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
       interval: 30s
@@ -135,4 +149,4 @@ services:
 
 volumes:
   pg_data:
-  minio_data:
+  lake_data:
