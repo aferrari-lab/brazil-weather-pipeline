@@ -1,4 +1,4 @@
-# data_engineering — Clima do Brasil
+# brazil-weather-pipeline
 
 Pipeline de engenharia de dados de ponta a ponta com o clima diário de todos os municípios brasileiros desde 2016 ([Open-Meteo](https://open-meteo.com/) + IBGE), do data lake ao dashboard e à previsão de temperatura.
 
@@ -89,6 +89,12 @@ Com `make` instalado (Git Bash/WSL): `make setup`, `make up`, `make down`, `make
 - **Conexões por variável de ambiente** (`AIRFLOW_CONN_WAREHOUSE`, `AIRFLOW_CONN_LAKE`): nenhuma credencial no código ou no banco do Airflow.
 - **RustFS no lugar do MinIO:** a MinIO parou de publicar imagens da edição comunitária em 2025 e o projeto foi arquivado em 2026. O RustFS é compatível com a API S3, então o código usa `boto3`/`s3fs` normalmente e trocar por AWS S3 depois é só mudar o endpoint.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
+
+## Fontes e licenças
+
+- **Clima:** dados meteorológicos de [Open-Meteo.com](https://open-meteo.com/), sob licença [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- **Municípios:** [IBGE — Instituto Brasileiro de Geografia e Estatística](https://www.ibge.gov.br/), dados públicos.
+- **Código:** licença MIT (veja [LICENSE](LICENSE)).
 
 ## O que eu faria em produção
 
