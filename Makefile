@@ -1,5 +1,5 @@
 # Atalhos do projeto. No Windows, rode no Git Bash ou WSL (ou use os comandos docker compose direto).
-.PHONY: help setup up down restart logs ps clean lint format test spark-build spark-teste spark-shell
+.PHONY: help setup up down restart logs ps clean lint format test spark-build spark-teste spark-shell spark-silver spark-silver-completo
 
 help:            ## Lista os comandos
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -44,3 +44,9 @@ spark-teste:     ## Roda o job de teste: o Spark lendo o bronze do lake
 
 spark-shell:     ## Abre o PySpark interativo já conectado ao lake
 	docker compose run --rm spark /opt/spark/bin/pyspark
+
+spark-silver:    ## Atualiza a silver do clima (só as partições com dados novos)
+	docker compose run --rm spark /opt/spark/bin/spark-submit --driver-memory 2g silver_clima.py
+
+spark-silver-completo: ## Regera a silver do clima inteira
+	docker compose run --rm spark /opt/spark/bin/spark-submit --driver-memory 2g silver_clima.py --modo completo

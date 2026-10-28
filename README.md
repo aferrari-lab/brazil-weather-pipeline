@@ -83,6 +83,8 @@ docker compose build spark                                   # 1ª vez: constró
 docker compose run --rm spark                                # job de teste: lê o bronze do lake
 docker compose run --rm spark /opt/spark/bin/spark-submit teste_bronze.py   # o mesmo, explícito
 docker compose run --rm spark /opt/spark/bin/pyspark         # PySpark interativo
+docker compose run --rm spark /opt/spark/bin/spark-submit silver_clima.py                  # silver: só o que mudou
+docker compose run --rm spark /opt/spark/bin/spark-submit silver_clima.py --modo completo  # silver inteira
 ```
 
 Os jobs ficam em `spark/jobs/` e são editados normalmente no VS Code: a pasta é montada dentro do container.
@@ -116,6 +118,7 @@ Os jobs ficam em `spark/jobs/` e são editados normalmente no VS Code: a pasta �
 - **Carga incremental com checkpoint:** o clima é buscado só a partir do último dia válido de cada município (`controle/checkpoint_clima.parquet`). A gravação mescla com o que já existe pela chave município + dia, então a carga é incremental e idempotente, e retoma de onde parou se o limite da API for atingido.
 - **Log de execuções:** cada carga grava uma linha em `controle/log_cargas/` (início, fim, linhas novas, chamadas à API e status: `sucesso`, `limite_api` ou `erro`), mesmo quando falha. Cada execução grava seu próprio arquivo, então cargas simultâneas nunca sobrescrevem o log uma da outra.
 - **Spark em Docker:** rodar o Spark direto no Windows exige Java, `winutils` do Hadoop e variáveis de ambiente. No container, funciona igual em qualquer máquina e já fica na mesma rede do lake e do Postgres. Os conectores (hadoop-aws, AWS SDK, JDBC do Postgres) são baixados na imagem, com versões casadas com o Hadoop 3.3.4 do Spark 3.5.6.
+- **Silver do clima (`silver/clima_diario`):** nomes em português com a unidade no nome (`temp_max_c`, `chuva_mm`), uma linha por município e dia (fica a extração mais recente), nome do município e região do cadastro, amplitude térmica e flags de qualidade (`dado_completo`, `temp_suspeita`) em vez de apagar linhas. O modo incremental reprocessa só as partições (ano, mês, UF) que receberam dados novos no bronze, com sobrescrita dinâmica de partições.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças
