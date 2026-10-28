@@ -21,7 +21,7 @@ import argparse
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 
-from comum import caminho_lake, criar_spark
+from comum import caminho_existe, caminho_lake, criar_spark
 
 BRONZE_CLIMA = "bronze/clima_diario"
 BRONZE_MUNICIPIOS = "bronze/municipios/municipios.parquet"
@@ -61,16 +61,32 @@ COLUNAS_SILVER = [
     "dado_completo",
     "temp_suspeita",
     "_extraido_em",
+    "_gravado_em",
     "_processado_em",
 ]
 
 
+def ler_bronze(spark: SparkSession, caminho_bronze: str) -> DataFrame:
+    """Lê o bronze do clima, aceitando arquivos gravados antes e depois de "_gravado_em".
+
+    Os arquivos antigos do bronze não têm a coluna "_gravado_em". O mergeSchema
+    junta os schemas de todos os arquivos (a coluna vem nula nos antigos) e, para
+    esses, uso a hora da extração no lugar, que era o critério da época.
+    """
+    bronze = spark.read.option("mergeSchema", "true").parquet(caminho_bronze)
+    if "_gravado_em" not in bronze.columns:
+        bronze = bronze.withColumn("_gravado_em", F.lit(None).cast("timestamp"))
+    return bronze.withColumn("_gravado_em", F.coalesce("_gravado_em", "_extraido_em"))
+
+
 def deduplicar(clima: DataFrame) -> DataFrame:
-    """Mantém uma linha por município e dia: a da extração mais recente."""
-    # A janela numera as linhas de cada (município, dia) da extração mais nova
-    # para a mais antiga; fico só com a primeira. É o mesmo critério da mesclagem
-    # do bronze, aplicado de novo aqui como garantia.
-    janela = Window.partitionBy(*CHAVE).orderBy(F.col("_extraido_em").desc())
+    """Mantém uma linha por município e dia: a gravada por último no bronze."""
+    # O bronze é append-only: um dia pode aparecer mais de uma vez (um lote refeito,
+    # um dia que veio nulo e foi buscado de novo). A janela numera as versões de cada
+    # (município, dia) da gravação mais nova para a mais antiga, e fico com a primeira.
+    janela = Window.partitionBy(*CHAVE).orderBy(
+        F.col("_gravado_em").desc(), F.col("_extraido_em").desc()
+    )
     return (
         clima.withColumn("_ordem", F.row_number().over(janela))
         .filter(F.col("_ordem") == 1)
@@ -128,8 +144,10 @@ def transformar(clima_bronze: DataFrame, municipios: DataFrame) -> DataFrame:
 
 
 def particoes_com_dados_novos(clima_bronze: DataFrame, desde) -> list[tuple]:
-    """Lista as partições (ano, mês, UF) do bronze extraídas depois de "desde"."""
-    novas = clima_bronze.filter(F.col("_extraido_em") > F.lit(desde))
+    """Lista as partições (ano, mês, UF) do bronze gravadas depois de "desde"."""
+    # Uso a hora da gravação, e não a da extração: com cargas em paralelo, um lote
+    # extraído antes pode ser gravado depois, e pela extração ele ficaria de fora.
+    novas = clima_bronze.filter(F.col("_gravado_em") > F.lit(desde))
     return [tuple(linha) for linha in novas.select(*PARTICOES).distinct().collect()]
 
 
@@ -177,17 +195,22 @@ def validar(silver: DataFrame) -> dict:
     return resumo
 
 
-def ultima_extracao_processada(spark: SparkSession, caminho_silver: str):
-    """Até que extração do bronze a silver já foi processada (None se ela não existe)."""
-    try:
-        silver = spark.read.parquet(caminho_silver)
-    except Exception as erro:
-        # Só trato como "silver vazia" o erro de caminho inexistente. Qualquer outro
-        # erro (rede, credencial) sobe, para nunca reprocessar tudo por engano.
-        if "PATH_NOT_FOUND" in str(erro) or "Path does not exist" in str(erro):
-            return None
-        raise
-    return silver.agg(F.max("_extraido_em")).first()[0]
+def ultima_gravacao_processada(spark: SparkSession, caminho_silver: str):
+    """Até que gravação do bronze a silver já foi processada.
+
+    Devolve None quando a silver ainda não existe, ou quando é de uma versão antiga
+    (sem "_gravado_em"): nos dois casos, a silver precisa ser gerada por inteiro.
+    """
+    # Verifico a existência antes de ler, em vez de interpretar a mensagem de erro
+    # da leitura: assim uma falha de rede ou de credencial nunca é confundida com
+    # "a silver não existe" (o que faria reprocessar tudo por engano).
+    if not caminho_existe(spark, caminho_silver):
+        return None
+    silver = spark.read.parquet(caminho_silver)
+    if "_gravado_em" not in silver.columns:
+        print("Silver de uma versão anterior (sem _gravado_em): será regerada por inteiro.")
+        return None
+    return silver.agg(F.max("_gravado_em")).first()[0]
 
 
 def processar(
@@ -198,13 +221,13 @@ def processar(
     modo: str = "incremental",
 ) -> dict:
     """Lê o bronze, transforma, valida e grava a silver. Devolve o resumo da validação."""
-    clima_bronze = spark.read.parquet(caminho_bronze)
+    clima_bronze = ler_bronze(spark, caminho_bronze)
     municipios = spark.read.parquet(caminho_municipios)
 
     if modo == "incremental":
-        desde = ultima_extracao_processada(spark, caminho_silver)
+        desde = ultima_gravacao_processada(spark, caminho_silver)
         if desde is None:
-            print("Silver ainda não existe: rodando a carga completa.")
+            print("Silver ainda não existe (ou é de outra versão): rodando a carga completa.")
             modo = "completo"
         else:
             particoes = particoes_com_dados_novos(clima_bronze, desde)

@@ -9,12 +9,12 @@ import pytest
 
 from ingestion.lake import (
     ConfigLake,
+    anexar_parquet,
     caminho_completo,
     carregar_config,
     existe,
     gravar_parquet,
     ler_parquet,
-    mesclar_parquet,
 )
 
 
@@ -125,25 +125,34 @@ def test_config_monta_acesso_s3(monkeypatch, sem_dotenv):
     assert config.storage_options["config_kwargs"]["s3"]["addressing_style"] == "path"
 
 
-def test_mesclar_preserva_dias_antigos_da_mesma_particao(lake_local):
-    # Mesma partição (2026/10/SP): primeiro os dias 1 e 2, depois os dias 3 e 4.
-    antigo = _clima("SP", 10, [20.0, 21.0])
-    novo = _clima("SP", 10, [22.0, 23.0]).assign(dia=[3, 4])
-
-    mesclar_parquet(antigo, "bronze/clima", lake_local, ["ano", "mes", "uf"], ["uf", "dia"])
-    mesclar_parquet(novo, "bronze/clima", lake_local, ["ano", "mes", "uf"], ["uf", "dia"])
+def test_anexar_acrescenta_sem_apagar_o_que_existe(lake_local):
+    particoes = ["ano", "mes", "uf"]
+    anexar_parquet(_clima("SP", 10, [20.0, 21.0]), "bronze/clima", lake_local, particoes, "lote1")
+    anexar_parquet(_clima("SP", 10, [22.0]), "bronze/clima", lake_local, particoes, "lote2")
 
     lido = ler_parquet("bronze/clima", lake_local)
-    assert sorted(lido["dia"]) == [1, 2, 3, 4]
+    assert sorted(lido["temp"]) == [20.0, 21.0, 22.0]  # as duas gravações estão lá
 
 
-def test_mesclar_substitui_pela_versao_nova(lake_local):
-    particoes, chave = ["ano", "mes", "uf"], ["uf", "dia"]
-    mesclar_parquet(_clima("SP", 10, [20.0, 21.0]), "bronze/clima", lake_local, particoes, chave)
-    mesclar_parquet(_clima("SP", 10, [99.0]), "bronze/clima", lake_local, particoes, chave)
+def test_anexar_usa_o_id_do_lote_no_nome_do_arquivo(lake_local, tmp_path):
+    anexar_parquet(_clima("SP", 10, [20.0]), "bronze/clima", lake_local, ["uf"], "abc123")
 
-    lido = ler_parquet("bronze/clima", lake_local).sort_values("dia")
-    assert lido["temp"].tolist() == [99.0, 21.0]  # dia 1 atualizado, dia 2 mantido
+    arquivos = [p.name for p in (tmp_path / "lake" / "bronze" / "clima").rglob("*.parquet")]
+    assert arquivos == ["abc123-0.parquet"]
+
+
+def test_anexar_recusa_dataframe_vazio(lake_local):
+    with pytest.raises(ValueError, match="vazio"):
+        anexar_parquet(pd.DataFrame(), "bronze/clima", lake_local, ["uf"], "lote")
+
+
+def test_ler_so_algumas_colunas(lake_local):
+    gravar_parquet(_clima("SP", 10, [20.0]), "bronze/t.parquet", lake_local)
+
+    assert list(ler_parquet("bronze/t.parquet", lake_local, colunas=["uf", "temp"]).columns) == [
+        "uf",
+        "temp",
+    ]
 
 
 def test_existe(lake_local):

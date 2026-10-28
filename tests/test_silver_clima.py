@@ -6,7 +6,7 @@ pulados (e não falham): o job continua sendo testado de verdade no container.
 
 import shutil
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -41,7 +41,16 @@ def spark():
     sessao.stop()
 
 
-def _linha_bronze(codigo, uf, dia, extraido_em=EXTRACAO_1, tmax=30.0, tmin=20.0, tmedia=25.0):
+def _linha_bronze(
+    codigo,
+    uf,
+    dia,
+    extraido_em=EXTRACAO_1,
+    tmax=30.0,
+    tmin=20.0,
+    tmedia=25.0,
+    gravado_em=None,
+):
     return {
         "codigo_ibge": codigo,
         "uf_sigla": uf,
@@ -56,6 +65,8 @@ def _linha_bronze(codigo, uf, dia, extraido_em=EXTRACAO_1, tmax=30.0, tmin=20.0,
         "wind_speed_10m_max": 10.0,
         "_fonte": "teste",
         "_extraido_em": extraido_em,
+        # Por padrão, gravado um minuto depois de extraído, como na ingestão real.
+        "_gravado_em": gravado_em or extraido_em + timedelta(minutes=1),
     }
 
 
@@ -206,3 +217,72 @@ def test_modo_completo_regrava_tudo(spark, pasta):
 
     assert resumo["linhas"] == 1
     assert spark.read.parquet(str(pasta / "silver")).count() == 1
+
+
+# --- Correções da revisão: _gravado_em e compatibilidade com dados antigos ---
+def _anexar_bronze(spark, pasta, linhas, sem_gravado_em=False):
+    """Acrescenta linhas ao bronze, como faz a ingestão (append-only)."""
+    df = _bronze(spark, linhas)
+    if sem_gravado_em:
+        df = df.drop("_gravado_em")  # arquivo gravado antes de a coluna existir
+    df.write.mode("append").partitionBy(*silver_clima.PARTICOES).parquet(str(pasta / "bronze"))
+
+
+def test_lote_extraido_antes_mas_gravado_depois_nao_fica_de_fora(spark, pasta):
+    # O cenário de cargas em paralelo: o lote do PR foi extraído ANTES do de SP,
+    # mas gravado DEPOIS de a silver já ter processado o de SP.
+    t = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    _anexar_bronze(spark, pasta, [_linha_bronze(3509502, "SP", date(2025, 1, 1), t, gravado_em=t)])
+    _rodar(spark, pasta)
+
+    pr_extraido_antes = t - timedelta(hours=1)
+    _anexar_bronze(
+        spark,
+        pasta,
+        [
+            _linha_bronze(
+                4106902,
+                "PR",
+                date(2025, 1, 1),
+                pr_extraido_antes,
+                gravado_em=t + timedelta(hours=1),
+            )
+        ],
+    )
+    _rodar(spark, pasta)
+
+    # Pela hora da extração ele seria ignorado; pela hora da gravação, entra.
+    assert spark.read.parquet(str(pasta / "silver")).filter("uf_sigla = 'PR'").count() == 1
+
+
+def test_bronze_com_arquivos_antigos_e_novos_e_lido_e_deduplicado(spark, pasta):
+    dia = date(2025, 1, 1)
+    # Versão antiga (sem _gravado_em) e versão nova do mesmo município e dia.
+    _anexar_bronze(
+        spark,
+        pasta,
+        [_linha_bronze(3509502, "SP", dia, EXTRACAO_1, tmax=30.0)],
+        sem_gravado_em=True,
+    )
+    _anexar_bronze(spark, pasta, [_linha_bronze(3509502, "SP", dia, EXTRACAO_2, tmax=31.0)])
+
+    _rodar(spark, pasta)
+
+    silver = spark.read.parquet(str(pasta / "silver"))
+    assert silver.count() == 1
+    assert silver.first()["temp_max_c"] == 31.0  # ficou a versão gravada por último
+
+
+def test_silver_de_versao_antiga_e_regerada_por_inteiro(spark, pasta):
+    _anexar_bronze(spark, pasta, [_linha_bronze(3509502, "SP", date(2025, 1, 1))])
+    _rodar(spark, pasta)
+    # Simulo uma silver gerada antes da correção: sem a coluna _gravado_em.
+    antiga = spark.read.parquet(str(pasta / "silver")).drop("_gravado_em")
+    antiga.write.mode("overwrite").parquet(str(pasta / "silver_antiga"))
+    shutil.rmtree(pasta / "silver")
+    shutil.copytree(pasta / "silver_antiga", pasta / "silver")
+
+    resumo = _rodar(spark, pasta)
+
+    assert resumo["linhas"] == 1  # regerou em vez de dizer "em dia"
+    assert "_gravado_em" in spark.read.parquet(str(pasta / "silver")).columns

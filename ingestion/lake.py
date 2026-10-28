@@ -135,8 +135,12 @@ def ler_parquet(
     config: ConfigLake | None = None,
     filtros: list[list[tuple[str, str, Any]]] | None = None,
     schema: Any = None,
+    colunas: list[str] | None = None,
 ) -> pd.DataFrame:
     """Lê um arquivo ou uma pasta particionada de Parquet do lake.
+
+    colunas: lê só as colunas pedidas. O Parquet guarda cada coluna separada, então
+    ler três colunas de uma tabela de quinze é bem mais rápido do que ler tudo.
 
     schema: schema do pyarrow para ler uma pasta com vários arquivos de forma
     consistente, mesmo que algum arquivo tenha gravado uma coluna toda vazia.
@@ -150,59 +154,52 @@ def ler_parquet(
     # Com filtros, o pyarrow nem abre as pastas que não interessam. Isso importa
     # quando o lake tiver centenas de partições e eu só quiser algumas.
     df = pd.read_parquet(
-        origem, storage_options=config.storage_options, filters=filtros, schema=schema
+        origem,
+        storage_options=config.storage_options,
+        filters=filtros,
+        schema=schema,
+        columns=colunas,
     )
     logger.info("Lidas %d linhas de %s", len(df), origem)
     return df
 
 
-def mesclar_parquet(
+def anexar_parquet(
     df: pd.DataFrame,
     caminho: str,
     config: ConfigLake | None,
     particoes: list[str],
-    chave: list[str],
-) -> int:
-    """Junta dados novos aos que já existem nas mesmas partições e regrava.
+    id_lote: str,
+) -> str:
+    """Acrescenta um lote ao lake como arquivos novos, sem tocar no que já existe.
 
-    É o que permite a carga incremental: se o lake já tem os dias 1 a 10 de um
-    mês e chegam os dias 11 a 23, a partição fica com 1 a 23. Se chegar de novo
-    um dia que já existia, a versão nova substitui a antiga (pela chave).
-    Devolve o total de linhas nas partições regravadas.
+    É a gravação "append-only" do bronze: cada lote vira um arquivo novo dentro de
+    cada partição (ex.: ano=2025/mes=1/uf_sigla=SP/<id_lote>-0.parquet).
+    - Nada é apagado nem reescrito, então uma queda no meio da gravação nunca
+      estraga dados que já estavam lá.
+    - O custo de gravar um lote não cresce com o tamanho do lake.
+    - Duas cargas gravando ao mesmo tempo não interferem uma na outra.
+    Se o mesmo dado for gravado duas vezes (um lote refeito, por exemplo), as
+    duas versões ficam no bronze, e a silver fica com a mais recente.
     """
     config = config or carregar_config()
+    destino = caminho_completo(caminho, config)
 
-    # Descubro quais partições os dados novos tocam, ex.: (2025, 1, "SP"), e
-    # leio do lake só essas, para não carregar o lake inteiro na memória.
-    filtros = []
-    for combinacao in df[particoes].drop_duplicates().itertuples(index=False):
-        # O pyarrow não aceita números do numpy no filtro: o .item() converte cada
-        # valor para o tipo puro do Python (ex.: numpy.int64 -> int).
-        valores = [v.item() if hasattr(v, "item") else v for v in combinacao]
-        filtros.append(list(zip(particoes, ["="] * len(particoes), valores, strict=True)))
+    if df.empty:
+        raise ValueError(f"Tentativa de anexar um DataFrame vazio em {destino}.")
+    faltando = set(particoes) - set(df.columns)
+    if faltando:
+        raise ValueError(f"Colunas de partição ausentes no DataFrame: {sorted(faltando)}")
 
-    # Verifico se o caminho existe em vez de capturar o erro de leitura. Assim uma
-    # falha de rede ao ler nunca é confundida com "não há dados", o que me faria
-    # regravar a partição só com os dados novos e perder os antigos.
-    if existe(caminho, config):
-        existentes = ler_parquet(caminho, config, filtros)
-    else:
-        existentes = pd.DataFrame(columns=df.columns)
-
-    if not existentes.empty:
-        # Ao ler, o pyarrow devolve as colunas de partição como categorias. Eu as
-        # converto de volta para os tipos originais, para o concat não misturar tipos.
-        existentes = existentes.astype({coluna: df[coluna].dtype for coluna in particoes})
-        combinado = pd.concat([existentes[df.columns], df], ignore_index=True)
-    else:
-        combinado = df.copy()
-
-    # keep="last" mantém a linha que veio por último no concat, ou seja, a nova.
-    antes = len(combinado)
-    combinado = combinado.drop_duplicates(subset=chave, keep="last")
-    substituidas = antes - len(combinado)
-    if substituidas:
-        logger.info("%d linha(s) já existentes foram substituídas pela versão nova.", substituidas)
-
-    gravar_parquet(combinado, caminho, config, particoes)
-    return len(combinado)
+    # O id do lote no nome do arquivo garante que ele seja novo, e o
+    # "overwrite_or_ignore" diz ao pyarrow para não apagar nada que já exista.
+    df.to_parquet(
+        destino,
+        index=False,
+        partition_cols=particoes,
+        storage_options=config.storage_options,
+        basename_template=f"{id_lote}-{{i}}.parquet",
+        existing_data_behavior="overwrite_or_ignore",
+    )
+    logger.info("Anexadas %d linhas em %s (lote %s)", len(df), destino, id_lote)
+    return destino

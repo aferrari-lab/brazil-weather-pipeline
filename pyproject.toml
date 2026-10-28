@@ -19,6 +19,12 @@ testpaths = ["tests"]
 # Coloco a raiz do projeto no caminho de importação, para os testes acharem
 # os pacotes do projeto (ex.: ingestion) rodando só "pytest".
 pythonpath = ["."]
+# Avisos internos do pyspark sobre APIs do pandas/Python que ele ainda usa: não
+# vêm do código do projeto, então escondo para não poluir a saída dos testes.
+filterwarnings = [
+    "ignore:is_datetime64tz_dtype is deprecated",
+    "ignore:distutils Version classes are deprecated",
+]
 
 [tool.ruff.lint.isort]
 # Módulos do próprio projeto: "comum" é o módulo compartilhado dos jobs Spark.

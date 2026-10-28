@@ -59,7 +59,11 @@ def criar_spark(nome_app: str):
     # importado (e testado) em máquinas que não têm o Spark instalado.
     from pyspark.sql import SparkSession
 
-    construtor = SparkSession.builder.appName(nome_app)
+    # O maxToStringFields maior evita o aviso "Truncated the string representation
+    # of a plan" em tabelas com muitas colunas (é só um aviso de log, não um erro).
+    construtor = SparkSession.builder.appName(nome_app).config(
+        "spark.sql.debug.maxToStringFields", "200"
+    )
     for chave, valor in montar_config_s3a().items():
         construtor = construtor.config(chave, valor)
 
@@ -67,3 +71,13 @@ def criar_spark(nome_app: str):
     # O Spark é muito verboso no nível INFO; deixo só avisos e erros.
     spark.sparkContext.setLogLevel("WARN")
     return spark
+
+
+def caminho_existe(spark, caminho: str) -> bool:
+    """Diz se um caminho existe (no lake ou numa pasta local), sem tentar lê-lo."""
+    # Uso o sistema de arquivos do próprio Hadoop, por dentro do Spark: o mesmo
+    # código serve para s3a:// (lake) e para pastas locais (testes).
+    jvm = spark.sparkContext._jvm
+    hadoop_path = jvm.org.apache.hadoop.fs.Path(caminho)
+    sistema = hadoop_path.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration())
+    return bool(sistema.exists(hadoop_path))

@@ -1,7 +1,8 @@
 """Clima diário dos municípios brasileiros (Open-Meteo, API de dados históricos).
 
 A carga é incremental: cada execução busca só os dias que ainda faltam para cada
-município, a partir do checkpoint. Pode ser rodada quantas vezes quiser.
+município, a partir do que já está no bronze. Pode ser rodada quantas vezes quiser,
+inclusive várias UFs em paralelo.
 
 Executar (com o .venv ativo, na raiz do projeto e o lake no ar):
     python -m ingestion.clima --uf SP --limite 3     # teste rápido: 3 cidades de SP
@@ -13,6 +14,7 @@ import argparse
 import logging
 import math
 import time
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -21,11 +23,10 @@ import requests
 
 from ingestion.lake import (
     ConfigLake,
+    anexar_parquet,
     carregar_config,
     existe,
-    gravar_parquet,
     ler_parquet,
-    mesclar_parquet,
 )
 from ingestion.log_cargas import Execucao, registrar_carga
 from ingestion.municipios import CAMINHO_MUNICIPIOS, criar_sessao
@@ -63,15 +64,16 @@ ATRASO_DIAS = 5
 PESO_MAXIMO_POR_MINUTO = 500
 PAUSA_ENTRE_LOTES_SEGUNDOS = 60
 
-# Lake: uma pasta por ano, mês e UF. A gravação mescla com o que já existe, pela
-# chave município + dia, então a carga é incremental e idempotente ao mesmo tempo.
+# Lake: uma pasta por ano, mês e UF. O bronze é "append-only": cada lote grava
+# arquivos novos e nada é reescrito. Se um dia aparecer mais de uma vez (um lote
+# refeito), a silver fica com a versão gravada por último.
 CAMINHO_CLIMA = "bronze/clima_diario"
 PARTICOES = ["ano", "mes", "uf_sigla"]
-CHAVE_CLIMA = ["codigo_ibge", "data"]
 
-# Checkpoint: a última data com dado válido de cada município. É por ele que a
-# carga sabe o que já foi feito e retoma de onde parou se for interrompida.
-CAMINHO_CHECKPOINT = "controle/checkpoint_clima.parquet"
+# Não existe um arquivo de checkpoint separado: a última data carregada de cada
+# município é calculada lendo o próprio bronze. Sem um estado à parte, não há o
+# que duas cargas paralelas possam sobrescrever, nem como ele ficar diferente dos
+# dados de verdade.
 
 # Variável que uso para decidir se um dia "chegou de verdade". Dias recentes podem
 # vir com valores nulos enquanto a reanálise não fica pronta; esses dias eu não
@@ -242,44 +244,41 @@ def validar_clima(df: pd.DataFrame, n_municipios: int, inicio: date, fim: date) 
     )
 
 
-def _checkpoint_vazio() -> pd.DataFrame:
+def _ultimas_datas_vazio() -> pd.DataFrame:
     return pd.DataFrame(
         {"codigo_ibge": pd.Series(dtype="int64"), "ultima_data": pd.Series(dtype="object")}
     )
 
 
-def ler_checkpoint(config: ConfigLake) -> pd.DataFrame:
-    """Lê o checkpoint do lake. Na primeira carga, devolve uma tabela vazia."""
-    if not existe(CAMINHO_CHECKPOINT, config):
-        return _checkpoint_vazio()
-    return ler_parquet(CAMINHO_CHECKPOINT, config)[["codigo_ibge", "ultima_data"]]
+def ultimas_datas_carregadas(config: ConfigLake, uf: str) -> pd.DataFrame:
+    """Última data com dado válido de cada município da UF, lida do bronze.
 
+    É o "checkpoint" da carga incremental. Leio só a UF pedida e só três colunas,
+    então a consulta é rápida mesmo com o bronze grande.
+    """
+    if not existe(CAMINHO_CLIMA, config):
+        return _ultimas_datas_vazio()
 
-def atualizar_checkpoint(df_novo: pd.DataFrame, config: ConfigLake) -> None:
-    """Registra, para cada município do lote, a última data com dado válido."""
-    # Só considero "feito" o dia que veio com valor. Um dia que veio nulo será
+    bronze = ler_parquet(
+        CAMINHO_CLIMA,
+        config,
+        filtros=[[("uf_sigla", "=", uf)]],
+        colunas=["codigo_ibge", "data", VARIAVEL_REFERENCIA],
+    )
+    # Só conta como "feito" o dia que veio com valor. Um dia que veio nulo será
     # pedido de novo na próxima execução, quando a API já tiver o dado.
-    validos = df_novo[df_novo[VARIAVEL_REFERENCIA].notna()]
+    validos = bronze[bronze[VARIAVEL_REFERENCIA].notna()]
     if validos.empty:
-        logger.warning("Nenhum dia com dado válido neste lote; checkpoint não avançou.")
-        return
+        return _ultimas_datas_vazio()
 
-    novos = validos.groupby("codigo_ibge", as_index=False)["data"].max()
-    novos = novos.rename(columns={"data": "ultima_data"})
-
-    # Junto ao checkpoint anterior e fico com a maior data de cada município. Uso a
-    # maior (e não a mais recente gravada) para um reprocessamento de um período
-    # antigo nunca fazer o checkpoint "andar para trás".
-    todos = pd.concat([ler_checkpoint(config), novos], ignore_index=True)
-    checkpoint = todos.groupby("codigo_ibge", as_index=False)["ultima_data"].max()
-    checkpoint["atualizado_em"] = pd.Timestamp(datetime.now(UTC))
-
-    gravar_parquet(checkpoint, CAMINHO_CHECKPOINT, config)
+    ultimas = validos.groupby("codigo_ibge", as_index=False)["data"].max()
+    ultimas = ultimas.rename(columns={"data": "ultima_data"})
+    return ultimas.astype({"codigo_ibge": "int64"})
 
 
 def calcular_pendencias(
     municipios: pd.DataFrame,
-    checkpoint: pd.DataFrame,
+    ja_carregado: pd.DataFrame,
     inicio: date,
     fim: date,
 ) -> pd.DataFrame:
@@ -288,7 +287,9 @@ def calcular_pendencias(
     Função pura. Devolve os municípios com a coluna "inicio_pendente" e só os
     que ainda têm algo a buscar até "fim".
     """
-    df = municipios.merge(checkpoint[["codigo_ibge", "ultima_data"]], on="codigo_ibge", how="left")
+    df = municipios.merge(
+        ja_carregado[["codigo_ibge", "ultima_data"]], on="codigo_ibge", how="left"
+    )
 
     # Nunca carregado: começa no início do período. Já carregado: começa no dia
     # seguinte ao último. Uso o maior dos dois para respeitar um --inicio pedido.
@@ -311,8 +312,8 @@ def carregar_clima_uf(
 ) -> int:
     """Busca e grava o clima que falta para os municípios de uma UF.
 
-    Grava e atualiza o checkpoint a cada lote, para que uma interrupção (limite
-    da API, queda de rede) perca no máximo o lote em andamento.
+    Grava cada lote assim que ele chega, para que uma interrupção (limite da API,
+    queda de rede) perca no máximo o lote em andamento.
     Devolve o número de linhas novas buscadas na API.
     """
     if municipios_uf.empty:
@@ -333,10 +334,11 @@ def carregar_clima_uf(
         )
     municipios_uf = municipios_uf.loc[~sem_coordenada]
 
-    # Com --reprocessar eu ignoro o checkpoint e busco o período inteiro de novo,
-    # útil para corrigir um intervalo. A mesclagem no lake evita duplicar linhas.
-    checkpoint = _checkpoint_vazio() if reprocessar else ler_checkpoint(config)
-    pendentes = calcular_pendencias(municipios_uf, checkpoint, inicio, fim)
+    # Com --reprocessar eu ignoro o que já foi carregado e busco o período inteiro de
+    # novo, útil para corrigir um intervalo. As versões repetidas que isso cria no
+    # bronze são resolvidas pela silver, que fica com a gravada por último.
+    ja_carregado = _ultimas_datas_vazio() if reprocessar else ultimas_datas_carregadas(config, uf)
+    pendentes = calcular_pendencias(municipios_uf, ja_carregado, inicio, fim)
     if pendentes.empty:
         logger.info("%s: tudo em dia até %s. Nada a buscar.", uf, fim)
         return 0
@@ -374,10 +376,12 @@ def carregar_clima_uf(
             df = transformar_clima(respostas, lote, extraido_em)
             validar_clima(df, len(lote), inicio_grupo, fim)
 
-            # Primeiro gravo os dados, depois o checkpoint. Se algo falhar entre os
-            # dois, o pior caso é buscar o lote de novo, nunca perder dados.
-            mesclar_parquet(df, CAMINHO_CLIMA, config, PARTICOES, CHAVE_CLIMA)
-            atualizar_checkpoint(df, config)
+            # Marco a hora da gravação logo antes de gravar. É ela (e não a hora da
+            # extração, anterior à chamada à API) que a silver usa para saber o que
+            # é novo: com cargas em paralelo, um lote extraído antes pode ser gravado
+            # depois, e pela hora da extração ele ficaria de fora da silver.
+            df["_gravado_em"] = pd.Timestamp(datetime.now(UTC))
+            anexar_parquet(df, CAMINHO_CLIMA, config, PARTICOES, id_lote=uuid.uuid4().hex)
 
             total += len(df)
             if execucao:
@@ -442,8 +446,8 @@ def carregar_clima(
                 )
             except requests.exceptions.RetryError:
                 # As tentativas se esgotaram, o que costuma ser o limite diário da
-                # API. O que já foi gravado está salvo no checkpoint: é só rodar de
-                # novo depois.
+                # API. Os lotes já gravados estão no bronze: é só rodar de novo
+                # depois, que a carga continua de onde parou.
                 logger.error(
                     "%s: limite da API atingido. O progresso foi salvo; rode de novo "
                     "mais tarde que a carga continua de onde parou.",
@@ -475,7 +479,7 @@ def _ler_argumentos() -> argparse.Namespace:
     parser.add_argument(
         "--reprocessar",
         action="store_true",
-        help="Ignora o checkpoint e busca o período inteiro de novo",
+        help="Ignora o que já foi carregado e busca o período inteiro de novo",
     )
     return parser.parse_args()
 

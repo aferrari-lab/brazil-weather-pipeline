@@ -111,6 +111,8 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ./spark/jobs:/opt/spark/jobs
+      # O benchmark salva os resultados aqui (docs/benchmark/ do projeto).
+      - ./docs:/opt/spark/docs
     depends_on:
       lake:
         condition: service_started

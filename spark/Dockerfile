@@ -24,6 +24,10 @@ RUN set -eux; \
     wget -q "${MAVEN}/org/postgresql/postgresql/${POSTGRES_JDBC_VERSAO}/postgresql-${POSTGRES_JDBC_VERSAO}.jar"; \
     chmod 644 /opt/spark/jars/*.jar
 
+# Bibliotecas Python que os jobs usam além do pyspark: o benchmark compara o Spark
+# com o pandas, e o pyarrow é o que lê e grava Parquet no pandas.
+RUN pip install --no-cache-dir "pandas==2.2.3" "pyarrow==17.0.0"
+
 # Volto para o usuário sem privilégios da imagem oficial.
 USER spark
 

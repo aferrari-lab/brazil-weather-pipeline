@@ -158,8 +158,8 @@ def test_validar_barra_datas_fora_do_periodo():
 
 
 # --- Pendências (o que falta buscar) ---
-def test_pendencias_sem_checkpoint_comeca_no_inicio():
-    pendentes = clima.calcular_pendencias(MUNICIPIOS, clima._checkpoint_vazio(), INICIO, FIM)
+def test_pendencias_sem_nada_carregado_comeca_no_inicio():
+    pendentes = clima.calcular_pendencias(MUNICIPIOS, clima._ultimas_datas_vazio(), INICIO, FIM)
 
     assert len(pendentes) == 3
     assert set(pendentes["inicio_pendente"]) == {INICIO}
@@ -244,6 +244,11 @@ def test_carga_retoma_de_onde_parou_apos_interrupcao(tmp_path, monkeypatch):
     assert len(ler_parquet(clima.CAMINHO_CLIMA, lake)) == 2 * 4
 
 
+def _versao_mais_recente(bronze: pd.DataFrame) -> pd.DataFrame:
+    """O que a silver enxerga: uma linha por município e dia, a gravada por último."""
+    return bronze.sort_values("_gravado_em").drop_duplicates(["codigo_ibge", "data"], keep="last")
+
+
 def test_dias_ainda_nulos_sao_buscados_de_novo(tmp_path):
     lake = _lake(tmp_path)
 
@@ -254,20 +259,66 @@ def test_dias_ainda_nulos_sao_buscados_de_novo(tmp_path):
 
     # A segunda execução pede de novo só os 2 dias que vieram nulos e os completa.
     assert sessao.chamadas[0]["start_date"] == "2025-02-01"
-    lido = ler_parquet(clima.CAMINHO_CLIMA, lake)
-    assert len(lido) == 2 * 4
-    assert lido["temperature_2m_mean"].notna().all()
+    atual = _versao_mais_recente(ler_parquet(clima.CAMINHO_CLIMA, lake))
+    assert len(atual) == 2 * 4
+    assert atual["temperature_2m_mean"].notna().all()
 
 
-def test_reprocessar_ignora_o_checkpoint_sem_duplicar(tmp_path):
+def test_reprocessar_busca_de_novo_e_a_versao_nova_prevalece(tmp_path):
     lake = _lake(tmp_path)
     clima.carregar_clima_uf(SP, INICIO, FIM, _SessaoFalsa(), lake, pausa_segundos=0)
 
     sessao = _SessaoFalsa()
     clima.carregar_clima_uf(SP, INICIO, FIM, sessao, lake, pausa_segundos=0, reprocessar=True)
 
+    bronze = ler_parquet(clima.CAMINHO_CLIMA, lake)
     assert len(sessao.chamadas) == 1  # buscou de novo
-    assert len(ler_parquet(clima.CAMINHO_CLIMA, lake)) == 2 * 4  # sem duplicar
+    assert len(bronze) == 2 * 2 * 4  # o bronze guarda as duas versões (append-only)
+    assert len(_versao_mais_recente(bronze)) == 2 * 4  # a silver vê uma linha por dia
+
+
+# --- Garantias do bronze append-only ---
+def test_cada_lote_grava_arquivos_novos_sem_tocar_nos_antigos(tmp_path):
+    lake = _lake(tmp_path)
+    pasta = tmp_path / "lake" / clima.CAMINHO_CLIMA
+
+    clima.carregar_clima_uf(SP, INICIO, FIM, _SessaoFalsa(), lake, pausa_segundos=0)
+    antes = {arquivo: arquivo.read_bytes() for arquivo in pasta.rglob("*.parquet")}
+    clima.carregar_clima_uf(
+        SP, INICIO, FIM, _SessaoFalsa(), lake, pausa_segundos=0, reprocessar=True
+    )
+    depois = list(pasta.rglob("*.parquet"))
+
+    assert len(depois) == 2 * len(antes)  # arquivos novos para o novo lote
+    assert all(arquivo.read_bytes() == conteudo for arquivo, conteudo in antes.items())
+
+
+def test_ufs_carregadas_em_paralelo_nao_se_atrapalham(tmp_path):
+    # Simulo duas cargas simultâneas: as duas calculam o que falta ANTES de qualquer
+    # uma gravar (o pior caso de concorrência) e depois gravam.
+    lake = _lake(tmp_path)
+    rj = MUNICIPIOS[MUNICIPIOS["uf_sigla"] == "RJ"]
+    pendentes_sp = clima.ultimas_datas_carregadas(lake, "SP")
+    pendentes_rj = clima.ultimas_datas_carregadas(lake, "RJ")
+    assert pendentes_sp.empty and pendentes_rj.empty
+
+    clima.carregar_clima_uf(SP, INICIO, FIM, _SessaoFalsa(), lake, pausa_segundos=0)
+    clima.carregar_clima_uf(rj, INICIO, FIM, _SessaoFalsa(), lake, pausa_segundos=0)
+
+    # Nenhuma carga apagou a outra, e o "checkpoint" de cada UF reflete só a dela.
+    assert len(ler_parquet(clima.CAMINHO_CLIMA, lake)) == 3 * 4
+    assert set(clima.ultimas_datas_carregadas(lake, "SP")["codigo_ibge"]) == {3509502, 3550308}
+    assert set(clima.ultimas_datas_carregadas(lake, "RJ")["codigo_ibge"]) == {3304557}
+
+
+def test_lote_registra_a_hora_da_gravacao(tmp_path):
+    lake = _lake(tmp_path)
+    clima.carregar_clima_uf(SP, INICIO, FIM, _SessaoFalsa(), lake, pausa_segundos=0)
+
+    bronze = ler_parquet(clima.CAMINHO_CLIMA, lake)
+
+    assert bronze["_gravado_em"].notna().all()
+    assert (bronze["_gravado_em"] >= bronze["_extraido_em"]).all()
 
 
 def test_carga_da_uf_ignora_municipio_sem_coordenada(tmp_path):

@@ -85,9 +85,15 @@ docker compose run --rm spark /opt/spark/bin/spark-submit teste_bronze.py   # o 
 docker compose run --rm spark /opt/spark/bin/pyspark         # PySpark interativo
 docker compose run --rm spark /opt/spark/bin/spark-submit silver_clima.py                  # silver: só o que mudou
 docker compose run --rm spark /opt/spark/bin/spark-submit silver_clima.py --modo completo  # silver inteira
+docker compose run --rm spark /opt/spark/bin/spark-submit silver_postgres.py               # silver → Postgres (schema silver)
+docker compose run --rm spark /opt/spark/bin/spark-submit --driver-memory 4g benchmark.py # pandas × PySpark → docs/benchmark/
 ```
 
 Os jobs ficam em `spark/jobs/` e são editados normalmente no VS Code: a pasta é montada dentro do container.
+
+### Comparativo de performance
+
+Resultados do benchmark pandas × PySpark (mesma transformação da silver, ponta a ponta, e o ganho do particionamento) em [docs/benchmark/README.md](docs/benchmark/README.md).
 
 ## Estrutura
 
@@ -115,10 +121,12 @@ Os jobs ficam em `spark/jobs/` e são editados normalmente no VS Code: a pasta �
 - **LocalExecutor:** dispensa Redis e workers Celery; suficiente para um pipeline diário em uma máquina.
 - **Conexões por variável de ambiente** (`AIRFLOW_CONN_WAREHOUSE`, `AIRFLOW_CONN_LAKE`): nenhuma credencial no código ou no banco do Airflow.
 - **RustFS no lugar do MinIO:** a MinIO parou de publicar imagens da edição comunitária em 2025 e o projeto foi arquivado em 2026. O RustFS é compatível com a API S3, então o código usa `boto3`/`s3fs` normalmente e trocar por AWS S3 depois é só mudar o endpoint.
-- **Carga incremental com checkpoint:** o clima é buscado só a partir do último dia válido de cada município (`controle/checkpoint_clima.parquet`). A gravação mescla com o que já existe pela chave município + dia, então a carga é incremental e idempotente, e retoma de onde parou se o limite da API for atingido.
+- **Bronze append-only e carga incremental segura para paralelismo:** cada lote grava arquivos novos no bronze e nada é reescrito ou apagado (gravar um objeto no S3 é atômico, então uma queda nunca corrompe o que já estava lá). A última data carregada de cada município é calculada lendo o próprio bronze, sem arquivo de checkpoint separado, então várias UFs podem carregar ao mesmo tempo. Cada lote registra `_gravado_em`, e a silver usa essa hora (e não a da extração) para saber o que é novo e qual versão de cada dia vale.
+- **Evolução de schema:** a silver lê arquivos antigos e novos do bronze juntos (`mergeSchema`), e colunas novas da silver são criadas no Postgres com `ALTER TABLE ... ADD COLUMN`, sem apagar a tabela.
 - **Log de execuções:** cada carga grava uma linha em `controle/log_cargas/` (início, fim, linhas novas, chamadas à API e status: `sucesso`, `limite_api` ou `erro`), mesmo quando falha. Cada execução grava seu próprio arquivo, então cargas simultâneas nunca sobrescrevem o log uma da outra.
 - **Spark em Docker:** rodar o Spark direto no Windows exige Java, `winutils` do Hadoop e variáveis de ambiente. No container, funciona igual em qualquer máquina e já fica na mesma rede do lake e do Postgres. Os conectores (hadoop-aws, AWS SDK, JDBC do Postgres) são baixados na imagem, com versões casadas com o Hadoop 3.3.4 do Spark 3.5.6.
 - **Silver do clima (`silver/clima_diario`):** nomes em português com a unidade no nome (`temp_max_c`, `chuva_mm`), uma linha por município e dia (fica a extração mais recente), nome do município e região do cadastro, amplitude térmica e flags de qualidade (`dado_completo`, `temp_suspeita`) em vez de apagar linhas. O modo incremental reprocessa só as partições (ano, mês, UF) que receberam dados novos no bronze, com sobrescrita dinâmica de partições.
+- **Silver no Postgres (`silver.clima_diario`, `silver.municipios`):** o Spark grava via JDBC. No modo incremental, as partições alteradas vão para uma tabela de staging e são trocadas no destino numa única transação (DELETE + INSERT): se algo falhar, o rollback deixa a tabela como estava. A carga completa usa TRUNCATE, preservando os índices, e o banco garante a chave única município + dia.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças
