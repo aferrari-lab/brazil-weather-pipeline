@@ -1,0 +1,17 @@
+# Conexão do dbt com o warehouse (Postgres). Nenhuma senha fica aqui: tudo vem
+# das variáveis de ambiente do .env, que o docker-compose repassa ao container.
+brazil_weather:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      # Dentro da rede do Docker o Postgres é "postgres:5432". A WAREHOUSE_HOST
+      # permite apontar para outro servidor (por exemplo, nos testes).
+      host: "{{ env_var('WAREHOUSE_HOST', 'postgres') }}"
+      port: "{{ env_var('WAREHOUSE_PORT', '5432') | as_number }}"
+      user: "{{ env_var('WAREHOUSE_USER') }}"
+      password: "{{ env_var('WAREHOUSE_PASSWORD') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB') }}"
+      # Schema padrão; cada camada define o seu (staging, gold...) no dbt_project.yml.
+      schema: dbt
+      threads: 4

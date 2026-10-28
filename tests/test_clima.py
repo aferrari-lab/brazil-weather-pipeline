@@ -328,3 +328,36 @@ def test_carga_da_uf_ignora_municipio_sem_coordenada(tmp_path):
     linhas = clima.carregar_clima_uf(sp, INICIO, FIM, _SessaoFalsa(), _lake(tmp_path), 0)
 
     assert linhas == 1 * 4
+
+
+# --- Respostas inválidas da API ---
+class _RespostaTexto:
+    """Uma resposta "200 OK" cujo conteúdo não é JSON (ex.: página de aviso)."""
+
+    status_code = 200
+    headers = {"Content-Type": "text/html"}
+    text = "<html>Servico temporariamente indisponivel</html>"
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+def test_resposta_que_nao_e_json_explica_o_que_chegou():
+    class SessaoComAviso(_SessaoFalsa):
+        def get(self, url, params, timeout):
+            return _RespostaTexto()
+
+    with pytest.raises(clima.RespostaInvalidaError, match="text/html.*indisponivel"):
+        clima.extrair_clima(MUNICIPIOS.head(1), INICIO, FIM, SessaoComAviso())
+
+
+def test_erro_informado_pela_api_vira_excecao_clara():
+    class SessaoComErro(_SessaoFalsa):
+        def get(self, url, params, timeout):
+            return _RespostaFalsa({"error": True, "reason": "Daily API request limit exceeded"})
+
+    with pytest.raises(clima.RespostaInvalidaError, match="Daily API request limit"):
+        clima.extrair_clima(MUNICIPIOS.head(1), INICIO, FIM, SessaoComErro())

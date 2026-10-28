@@ -1,5 +1,5 @@
 # Atalhos do projeto. No Windows, rode no Git Bash ou WSL (ou use os comandos docker compose direto).
-.PHONY: help setup up down restart logs ps clean lint format test spark-build spark-teste spark-shell spark-silver spark-silver-completo spark-postgres spark-benchmark
+.PHONY: help setup up down restart logs ps clean lint format test spark-build spark-teste spark-shell spark-silver spark-silver-completo spark-postgres spark-benchmark dbt-build dbt-test dbt-freshness dbt-docs
 
 help:            ## Lista os comandos
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -56,3 +56,16 @@ spark-postgres:  ## Leva a silver do lake para o Postgres (só o que mudou)
 
 spark-benchmark: ## Comparativo pandas × PySpark (resultados em docs/benchmark/)
 	docker compose run --rm spark /opt/spark/bin/spark-submit --driver-memory 4g benchmark.py
+
+dbt-build:       ## dbt: cria os modelos e roda os testes
+	docker compose run --rm dbt build
+
+dbt-test:        ## dbt: só os testes de dados
+	docker compose run --rm dbt test
+
+dbt-freshness:   ## dbt: confere se a silver está sendo atualizada
+	docker compose run --rm dbt source freshness
+
+dbt-docs:        ## dbt: gera e abre a documentação em http://localhost:8085
+	docker compose run --rm dbt docs generate
+	docker compose run --rm --service-ports dbt docs serve --host 0.0.0.0 --port 8080

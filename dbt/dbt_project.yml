@@ -1,0 +1,28 @@
+name: brazil_weather
+version: "1.0.0"
+config-version: 2
+
+# Nome do perfil de conexão, definido em profiles.yml (nesta mesma pasta).
+profile: brazil_weather
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: target
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  brazil_weather:
+    # Staging: um modelo por tabela de origem, só padronizando nomes e tipos.
+    # Como views, não ocupam espaço e sempre refletem a silver mais recente.
+    staging:
+      +schema: staging
+      +materialized: view
+    # Intermediate e marts (as próximas tarefas) entram aqui.
+
+tests:
+  brazil_weather:
+    # Guardo as linhas que falharam em cada teste numa tabela, para investigar
+    # o problema direto no banco em vez de só ver "falhou".
+    +store_failures: true
+    +schema: testes_falhas

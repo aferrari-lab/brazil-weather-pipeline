@@ -119,6 +119,24 @@ services:
     # Job padrão: o teste de leitura do bronze. Outros jobs são passados no "run".
     command: ["/opt/spark/bin/spark-submit", "--driver-memory", "2g", "teste_bronze.py"]
 
+  # dbt sob demanda, como o Spark:  docker compose run --rm dbt build
+  dbt:
+    build: ./dbt
+    image: brazil-weather-dbt:1.10
+    profiles: ["dbt"]
+    env_file: .env
+    environment:
+      DBT_PROFILES_DIR: /usr/app/dbt
+      # Dentro da rede do Docker o Postgres é "postgres:5432".
+      WAREHOUSE_HOST: postgres
+    volumes:
+      - ./dbt:/usr/app/dbt
+    ports:
+      - "8085:8080"   # documentação do dbt (dbt docs serve)
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   airflow-init:
     <<: *airflow-common
     environment:

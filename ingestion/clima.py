@@ -115,6 +115,33 @@ def tamanho_do_lote(inicio: date, fim: date) -> int:
     return max(1, math.floor(PESO_MAXIMO_POR_MINUTO / peso_por_local(inicio, fim)))
 
 
+class RespostaInvalidaError(ValueError):
+    """A API respondeu com sucesso (HTTP 2xx), mas o conteúdo não são os dados esperados."""
+
+
+def ler_json(resposta: requests.Response) -> Any:
+    """Converte a resposta em JSON, explicando o que veio quando não é JSON.
+
+    Já aconteceu de a API (ou algo no caminho, como um proxy) responder "200 OK" com
+    uma página de aviso em vez dos dados. Sem este tratamento, o erro seria um
+    "Expecting value" que não diz nada; com ele, a mensagem mostra o que chegou.
+    """
+    try:
+        dados = resposta.json()
+    except ValueError as erro:
+        tipo = resposta.headers.get("Content-Type", "desconhecido")
+        trecho = resposta.text[:300].strip() or "(resposta vazia)"
+        raise RespostaInvalidaError(
+            f"A API respondeu HTTP {resposta.status_code} com conteúdo que não é JSON "
+            f"(Content-Type: {tipo}). Início da resposta: {trecho!r}"
+        ) from erro
+
+    # O Open-Meteo também avisa erros com um JSON {"error": true, "reason": "..."}.
+    if isinstance(dados, dict) and dados.get("error"):
+        raise RespostaInvalidaError(f"A API devolveu um erro: {dados.get('reason', dados)}")
+    return dados
+
+
 def extrair_clima(
     lote: pd.DataFrame,
     inicio: date,
@@ -138,7 +165,7 @@ def extrair_clima(
     logger.info("Open-Meteo: %d município(s), %s a %s", len(lote), inicio, fim)
     resposta = sessao.get(URL_OPEN_METEO, params=parametros, timeout=TIMEOUT_SEGUNDOS)
     resposta.raise_for_status()
-    dados = resposta.json()
+    dados = ler_json(resposta)
 
     # Com um único ponto a API devolve um objeto; com vários, uma lista. Eu
     # padronizo sempre como lista para o resto do código não ter dois caminhos.

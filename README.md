@@ -13,8 +13,8 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | --- | --- | --- |
 | 1. Fundação | Ambiente sobe com um comando | ✅ |
 | 2. Ingestão bronze | Dados brutos no lake, carga incremental | ✅ código pronto (carga dos dados em andamento) |
-| 3. Silver com PySpark | Tabelas limpas + comparativo de performance | 🟡 em andamento |
-| 4. Modelagem com dbt | Modelo dimensional testado | ⏳ |
+| 3. Silver com PySpark | Tabelas limpas + comparativo de performance | ✅ |
+| 4. Modelagem com dbt | Modelo dimensional testado | 🟡 em andamento |
 | 5. Orquestração com Airflow | Pipeline diário automático | ⏳ |
 | 6. Qualidade e observabilidade | Painel de saúde do pipeline | ⏳ |
 | 7. Consumo | Dashboards + previsão de temperatura | ⏳ |
@@ -28,7 +28,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | Data lake | RustFS (S3 local) |
 | Processamento | PySpark 3.5.6 (em container Docker) |
 | Warehouse | Postgres 16 |
-| Transformação | dbt |
+| Transformação | dbt 1.10 (em container Docker) |
 | Orquestração | Apache Airflow 3 (LocalExecutor) |
 | BI | Metabase |
 | Qualidade de código | ruff, pre-commit, pytest |
@@ -95,7 +95,22 @@ Os jobs ficam em `spark/jobs/` e são editados normalmente no VS Code: a pasta �
 
 Resultados do benchmark pandas × PySpark (mesma transformação da silver, ponta a ponta, e o ganho do particionamento) em [docs/benchmark/README.md](docs/benchmark/README.md).
 
-## Estrutura
+## dbt
+
+O dbt roda num container, sob demanda, e lê a silver do Postgres. Os modelos SQL ficam em `dbt/models/` e são editados normalmente no VS Code.
+
+```bash
+docker compose build dbt                    # 1ª vez: constrói a imagem
+docker compose run --rm dbt build           # cria os modelos e roda os testes
+docker compose run --rm dbt source freshness  # a silver está sendo atualizada?
+```
+
+| Camada | Schema no Postgres | O que tem |
+| --- | --- | --- |
+| Staging | `staging` | `stg_clima_diario`, `stg_municipios`: nomes e tipos padronizados (views) |
+| Falhas de teste | `testes_falhas` | as linhas que reprovaram em cada teste, para investigar no banco |
+
+
 
 ```
 ├── airflow/
@@ -105,7 +120,7 @@ Resultados do benchmark pandas × PySpark (mesma transformação da silver, pont
 │   └── logs/          # gerado em runtime, fora do Git
 ├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas), clima.py (Open-Meteo)
 ├── spark/             # Dockerfile do Spark e jobs PySpark em spark/jobs/ (Fase 3)
-├── dbt/               # projeto dbt silver → gold (Fase 4)
+├── dbt/               # projeto dbt: models/ (staging → marts), testes genéricos próprios (Fase 4)
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops
 ├── notebooks/         # exploração
 ├── tests/
@@ -127,6 +142,7 @@ Resultados do benchmark pandas × PySpark (mesma transformação da silver, pont
 - **Spark em Docker:** rodar o Spark direto no Windows exige Java, `winutils` do Hadoop e variáveis de ambiente. No container, funciona igual em qualquer máquina e já fica na mesma rede do lake e do Postgres. Os conectores (hadoop-aws, AWS SDK, JDBC do Postgres) são baixados na imagem, com versões casadas com o Hadoop 3.3.4 do Spark 3.5.6.
 - **Silver do clima (`silver/clima_diario`):** nomes em português com a unidade no nome (`temp_max_c`, `chuva_mm`), uma linha por município e dia (fica a extração mais recente), nome do município e região do cadastro, amplitude térmica e flags de qualidade (`dado_completo`, `temp_suspeita`) em vez de apagar linhas. O modo incremental reprocessa só as partições (ano, mês, UF) que receberam dados novos no bronze, com sobrescrita dinâmica de partições.
 - **Silver no Postgres (`silver.clima_diario`, `silver.municipios`):** o Spark grava via JDBC. No modo incremental, as partições alteradas vão para uma tabela de staging e são trocadas no destino numa única transação (DELETE + INSERT): se algo falhar, o rollback deixa a tabela como estava. A carga completa usa TRUNCATE, preservando os índices, e o banco garante a chave única município + dia.
+- **Testes genéricos próprios no dbt** (`combinacao_unica`, `entre`) em vez de instalar um pacote só para eles: poucas linhas, sem dependência externa. Falhas ficam gravadas no schema `testes_falhas` (`store_failures`), e a faixa de temperatura é aviso (não erro), porque a silver já marca o dado como suspeito.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças

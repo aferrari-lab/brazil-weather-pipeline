@@ -1,0 +1,27 @@
+version: 2
+
+sources:
+  - name: silver
+    description: >
+      Camada silver do warehouse, gravada pelo Spark a partir do lake
+      (spark/jobs/silver_postgres.py). É a origem de todos os modelos do dbt.
+    schema: silver
+
+    # Freshness: o dbt avisa quando a silver para de ser atualizada. O Open-Meteo
+    # entrega os dados com cerca de 5 dias de atraso e a carga é diária, então
+    # 2 dias sem processamento já merecem atenção, e 7 indicam pipeline parado.
+    freshness:
+      warn_after: {count: 2, period: day}
+      error_after: {count: 7, period: day}
+    loaded_at_field: _processado_em
+
+    tables:
+      - name: clima_diario
+        description: >
+          Clima diário por município (uma linha por município e dia), desde
+          01/01/2025, com flags de qualidade calculadas na silver.
+
+      - name: municipios
+        description: Cadastro de municípios do IBGE com as coordenadas da sede.
+        # O cadastro muda muito pouco: não faz sentido cobrar atualização diária.
+        freshness: null

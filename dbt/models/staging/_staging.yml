@@ -1,0 +1,105 @@
+version: 2
+
+models:
+  - name: stg_municipios
+    description: Cadastro de municípios padronizado. Uma linha por município.
+    columns:
+      - name: codigo_ibge
+        description: Código IBGE de 7 dígitos do município. Chave do cadastro.
+        tests: [unique, not_null]
+      - name: municipio
+        description: Nome do município.
+        tests: [not_null]
+      - name: uf_sigla
+        description: Sigla da unidade federativa.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [AC, AL, AM, AP, BA, CE, DF, ES, GO, MA, MG, MS, MT, PA,
+                         PB, PE, PI, PR, RJ, RN, RO, RR, RS, SC, SE, SP, TO]
+      - name: regiao
+        description: Grande região do IBGE (Norte, Nordeste, Centro-Oeste, Sudeste, Sul).
+        tests:
+          - accepted_values:
+              arguments:
+                values: [Norte, Nordeste, Centro-Oeste, Sudeste, Sul]
+      - name: latitude
+        description: Latitude da sede do município, em graus.
+        tests:
+          - entre:
+              arguments: {minimo: -34, maximo: 6}
+      - name: longitude
+        description: Longitude da sede do município, em graus.
+        tests:
+          - entre:
+              arguments: {minimo: -74, maximo: -28}
+
+  - name: stg_clima_diario
+    description: >
+      Clima diário padronizado. Uma linha por município e dia (garantido pelo
+      teste de combinação única abaixo).
+    tests:
+      - combinacao_unica:
+          arguments:
+            colunas: [codigo_ibge, data]
+    columns:
+      - name: codigo_ibge
+        description: Código IBGE do município.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_municipios')
+                field: codigo_ibge
+      - name: data
+        description: Dia da medição, no fuso local do município.
+        tests:
+          - not_null
+          - entre:
+              arguments: {minimo: "'2025-01-01'"}
+      - name: temp_max_c
+        description: Temperatura máxima do dia a 2 m, em °C.
+        tests:
+          # Mesma faixa plausível da silver. Fora dela é aviso, não erro: o dado
+          # já vem marcado como suspeito e a investigação é manual.
+          - entre:
+              arguments: {minimo: -15, maximo: 50}
+              config: {severity: warn}
+      - name: temp_min_c
+        description: Temperatura mínima do dia a 2 m, em °C.
+        tests:
+          - entre:
+              arguments: {minimo: -15, maximo: 50}
+              config: {severity: warn}
+      - name: temp_media_c
+        description: Temperatura média do dia a 2 m, em °C.
+      - name: amplitude_termica_c
+        description: Diferença entre a máxima e a mínima do dia, em °C.
+        tests:
+          - entre:
+              arguments: {minimo: 0}
+              config: {severity: warn}
+      - name: chuva_mm
+        description: Precipitação acumulada no dia, em mm.
+        tests:
+          - entre:
+              arguments: {minimo: 0}
+      - name: umidade_media_pct
+        description: Umidade relativa média do dia a 2 m, em %.
+        tests:
+          - entre:
+              arguments: {minimo: 0, maximo: 100}
+      - name: vento_max_kmh
+        description: Velocidade máxima do vento a 10 m, em km/h.
+        tests:
+          - entre:
+              arguments: {minimo: 0}
+      - name: dado_completo
+        description: Verdadeiro quando todas as medidas do dia vieram preenchidas.
+      - name: temp_suspeita
+        description: Verdadeiro quando a temperatura está fora da faixa plausível ou é incoerente.
+      - name: gravado_em
+        description: Quando o lote com este dia foi gravado no lake (UTC).
+      - name: processado_em
+        description: Quando a linha foi processada na silver pelo Spark (UTC).
