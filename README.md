@@ -78,7 +78,7 @@ pytest -q                        # testes, sem precisar de internet nem do lake
 
 O bucket `lake` tem uma pasta por camada: `bronze/` (dado bruto da API), `silver/` (dado limpo pelo Spark) e `controle/` (o log de cada carga).
 
-![Camadas do lake: bronze, controle e silver](docs/img/lake_1_camadas.png)
+![Camadas do lake: bronze, controle e silver](docs/img/lake_1_camadas_.png)
 
 O bronze é particionado por ano, mês e UF (`ano=2025/mes=1/uf_sigla=SP/`). Quem lê só um mês ou um estado não precisa abrir o resto.
 
