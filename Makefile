@@ -1,5 +1,5 @@
 # Atalhos do projeto. No Windows, rode no Git Bash ou WSL (ou use os comandos docker compose direto).
-.PHONY: help setup up down restart logs ps clean lint format test spark-build spark-teste spark-shell spark-silver spark-silver-completo spark-postgres spark-benchmark dbt-build dbt-test dbt-freshness dbt-docs build airflow-reprocessar
+.PHONY: help setup up down restart logs ps clean lint format test spark-build spark-teste spark-shell spark-silver spark-silver-completo spark-postgres spark-benchmark dbt-build dbt-test dbt-freshness dbt-docs build airflow-reprocessar ml-previsao
 
 help:            ## Lista os comandos
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -12,7 +12,7 @@ setup:           ## Cria .env, venv e instala dependências + pre-commit
 
 build:           ## Constrói as imagens (Airflow, Spark, dbt). Rode de novo após mudar jobs ou modelos
 	docker compose build
-	docker compose build spark dbt
+	docker compose build spark dbt ml
 
 up:              ## Sobe todo o ambiente
 	docker compose up -d
@@ -77,3 +77,6 @@ dbt-docs:        ## dbt: gera e abre a documentação em http://localhost:8085
 airflow-reprocessar: ## Dispara a DAG de reprocessamento. Ex.: make airflow-reprocessar UF=SP INICIO=2025-03-01 FIM=2025-03-31
 	docker compose exec airflow-scheduler airflow dags trigger clima_reprocessar \
 		--conf '{"ufs": ["$(UF)"], "inicio": "$(INICIO)", "fim": "$(FIM)"}'
+
+ml-previsao:     ## Treina, avalia e publica a previsão de temperatura (depois do dbt)
+	docker compose run --rm ml

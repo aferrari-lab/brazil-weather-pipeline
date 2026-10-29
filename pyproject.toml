@@ -10,7 +10,7 @@ target-version = "py311"
 extend-exclude = ["airflow/logs", "dbt"]
 # Pastas onde ficam os módulos do projeto (os jobs Spark importam uns aos outros,
 # e as DAGs importam o pacote orquestracao/).
-src = [".", "spark/jobs", "airflow/dags"]
+src = [".", "spark/jobs", "airflow/dags", "ml"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
@@ -30,7 +30,7 @@ filterwarnings = [
 [tool.ruff.lint.isort]
 # Módulos do próprio projeto: "comum" é o módulo compartilhado dos jobs Spark e
 # "orquestracao" o das DAGs.
-known-first-party = ["ingestion", "comum", "orquestracao"]
+known-first-party = ["ingestion", "comum", "orquestracao", "previsao"]
 # A pasta airflow/ do projeto tem o mesmo nome do pacote do Airflow; sem esta linha,
 # algumas versões do ruff tratam "import airflow" como módulo do projeto.
 known-third-party = ["airflow"]

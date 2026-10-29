@@ -20,6 +20,7 @@ O dbt começa onde o Spark termina: ele lê as tabelas `silver.clima_diario` e
 | Staging | `staging` | view | `stg_clima_diario`, `stg_municipios`: nomes e tipos padronizados, sem regra de negócio |
 | Intermediate | `intermediate` | view | `int_clima_metricas`: média móvel e chuva acumulada de 7 dias corridos |
 | Gold | `gold` | tabela | `dim_municipio`, `dim_data`, `fct_clima_diario` (incremental), `agg_clima_mensal` |
+| ML | `ml` | tabela | `ml_features_temperatura`: features para prever a temperatura do dia seguinte (lida pelo job `ml/previsao.py`) |
 | Observabilidade | `observabilidade` | tabela | `obs_cobertura_diaria`, `obs_cobertura_uf`, `obs_volume_particao`, `obs_cargas`, `obs_resultados_testes`: a saúde do próprio pipeline |
 
 ## Como eu garanto a qualidade

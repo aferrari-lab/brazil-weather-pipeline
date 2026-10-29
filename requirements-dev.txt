@@ -2,5 +2,6 @@
 ruff>=0.6
 pre-commit>=3.8
 pytest>=8.3
+scikit-learn>=1.5   # testes do job de previsão (ml/)
 pyyaml>=6.0
 jupyter>=1.0

@@ -33,6 +33,10 @@ models:
     observabilidade:
       +schema: observabilidade
       +materialized: table
+    # Machine learning: as features que o job de previsão (ml/previsao.py) lê.
+    ml:
+      +schema: ml
+      +materialized: table
 
 vars:
   # Início do histórico do projeto (o mesmo da ingestão do Open-Meteo).

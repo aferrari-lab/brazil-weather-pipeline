@@ -17,7 +17,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | 4. Modelagem com dbt | Modelo dimensional testado | ✅ |
 | 5. Orquestração com Airflow | Pipeline diário automático | ✅ |
 | 6. Qualidade e observabilidade | Painel de saúde do pipeline | ✅ |
-| 7. Consumo | Dashboards + previsão de temperatura | ⏳ |
+| 7. Consumo | Dashboards + previsão de temperatura | ✅ |
 | 8. CI/CD e documentação | Repositório com cara de produção | ⏳ |
 
 ## Stack
@@ -49,7 +49,7 @@ pre-commit install
 
 # 3. Construir as imagens (1ª vez) e subir tudo
 docker compose build
-docker compose build spark dbt
+docker compose build spark dbt ml
 docker compose up -d
 docker compose ps           # aguarde todos ficarem "healthy"
 ```
@@ -155,7 +155,7 @@ O Airflow junta tudo num pipeline diário. As DAGs ficam em `airflow/dags/`:
 
 ```bash
 docker compose build                # 1ª vez: imagem do Airflow com as bibliotecas da ingestão
-docker compose build spark dbt      # imagens dos jobs (de novo sempre que mudar um job ou modelo)
+docker compose build spark dbt ml   # imagens dos jobs (de novo sempre que mudar um job ou modelo)
 docker compose up -d
 ```
 
@@ -189,6 +189,35 @@ O que alimenta esses modelos:
 
 Como ler o painel: o quanto do Brasil já foi carregado e a situação de cada UF (no print, SP em carga e as demais na fila), as execuções da ingestão por status e os testes do dbt. A tabela **"Partições com dado faltando" vazia é o resultado esperado**: nenhum mês fechado perdeu linhas. Os dois erros do dia 28 foram respostas inválidas da API, antes de existir o tratamento para elas (`RespostaInvalidaError`).
 
+## Previsão de temperatura
+
+O job `ml/previsao.py` prevê a temperatura média de cada município 1 dia à frente, com informação só até a véspera. Ele roda no fim da DAG diária (tarefa `previsao_temperatura`) ou com `docker compose run --rm ml`.
+
+- **Features** (`ml.ml_features_temperatura`, modelo dbt): temperatura dos dias 1, 2, 3 e 7 anteriores, média dos 7 dias anteriores, máxima, mínima, chuva, umidade e vento da véspera, sazonalidade (seno e cosseno do dia do ano) e coordenadas.
+- **Modelo:** gradient boosting (`HistGradientBoostingRegressor`, do scikit-learn).
+- **Comparação:** o modelo só vale se bater dois palpites simples. Um é a **persistência** (o dia seguinte igual à véspera), que em temperatura é difícil de bater. O outro é a **média sazonal** do município naquele mês.
+- **Avaliação temporal:** treino até 60 dias antes do último dado e teste nesses 60 dias, que o modelo nunca viu. A métrica é o erro médio absoluto (MAE), em °C.
+
+| Tabela (schema `ml`) | Conteúdo |
+| --- | --- |
+| `avaliacao_modelos` | MAE e RMSE de cada palpite em cada treino, para acompanhar o modelo ao longo do tempo |
+| `previsoes_teste` | Previsto × real nos dias de teste do último treino |
+| `previsoes_publicadas` | A previsão do dia seguinte de cada execução, gravada uma vez e nunca reescrita |
+
+**Primeiro resultado** (treino em 29/10/2026, com os 353 municípios de SP já carregados; teste de 25/08 a 23/10/2026, 21.180 previsões):
+
+| Palpite | Erro médio (MAE) | RMSE |
+| --- | --- | --- |
+| Gradient boosting | **1,57 °C** | 1,94 °C |
+| Persistência (dia seguinte = véspera) | 1,73 °C | 2,14 °C |
+| Média sazonal do mês | 2,63 °C | 3,26 °C |
+
+O modelo erra cerca de 9% menos que a persistência e 40% menos que a média sazonal. É um ganho modesto, e era o esperado: o modelo só conhece o passado do próprio município. O próximo passo para melhorar seria acrescentar informação de fora, como os municípios vizinhos (uma frente fria chega antes neles) ou a previsão numérica do tempo, que a própria Open-Meteo oferece.
+
+![Painel Clima do Brasil no Metabase: temperatura por região, meses mais quentes que o normal, erro de cada palpite e previsto × real](docs/img/metabase_clima.png)
+
+No painel "Clima do Brasil", por enquanto só aparece o Sudeste, porque SP é a UF já carregada. As outras regiões entram sozinhas conforme a carga diária avança. No gráfico de previsto × real, a persistência aparece como a curva real deslocada um dia para a direita (ela repete a véspera), e o modelo fica mais próximo da real na maior parte dos dias, mas suaviza os picos e vales mais bruscos.
+
 ## Estrutura
 
 ```
@@ -201,6 +230,7 @@ Como ler o painel: o quanto do Brasil já foi carregado e a situação de cada U
 ├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas), clima.py (Open-Meteo)
 ├── spark/             # Dockerfile do Spark e jobs PySpark em spark/jobs/ (Fase 3)
 ├── dbt/               # projeto dbt: models/ (staging → marts, observabilidade), testes genéricos próprios
+├── ml/                # job de previsão de temperatura (Dockerfile + previsao.py)
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops
 ├── notebooks/         # exploração
 ├── tests/
@@ -231,6 +261,9 @@ Como ler o painel: o quanto do Brasil já foi carregado e a situação de cada U
 - **Filas (pools) no Airflow:** `api_open_meteo` com uma vaga (duas cargas dividiriam a mesma cota diária) e `transformacao` com uma vaga (Spark e dbt um de cada vez, sem disputar memória nem ler a silver no meio de uma regravação).
 - **Observabilidade com modelos dbt próprios, sem pacote externo:** o histórico dos testes vem de um hook `on-run-end` de poucas linhas, e a cobertura e o volume são modelos SQL comuns. Pacotes como o elementary fazem isso com mais recursos; aqui eu quis que cada peça fosse explicável.
 - **Alerta de volume por contagem exata:** como cada município iniciado recebe o histórico inteiro de uma vez, dá para saber exatamente quantas linhas cada UF deve ter em cada mês. Isso é mais preciso que comparar com a média dos meses anteriores, e não dispara falso alarme enquanto o Brasil ainda está sendo carregado, porque só cobra os municípios já iniciados e os meses fechados.
+- **Previsão avaliada contra palpites simples:** um MAE sozinho não diz nada. A pergunta certa é se o modelo erra menos que "amanhã igual a hoje". Por isso a tabela de avaliação sempre traz a persistência e a média sazonal ao lado do modelo, e o job avisa no log quando o modelo não bate a persistência.
+- **Sem vazamento de dados:** toda feature usa só dias anteriores ao previsto, a separação treino/teste é por data (sem embaralhar) e a média sazonal é calculada só com o treino.
+- **Previsão publicada é imutável:** a previsão do próximo dia é gravada uma vez (`ON CONFLICT DO NOTHING`), antes de o dado real existir. Comparar com o real depois é uma avaliação honesta, que um modelo retreinado não consegue maquiar.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças
