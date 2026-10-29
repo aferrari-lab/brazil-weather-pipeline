@@ -112,7 +112,21 @@ docker compose run --rm dbt source freshness  # a silver está sendo atualizada?
 | Gold | `gold` | Modelo estrela: `dim_municipio`, `dim_data`, `fct_clima_diario` (incremental) e `agg_clima_mensal` (resumo mensal com anomalia de temperatura) |
 | Falhas de teste | `testes_falhas` | as linhas que reprovaram em cada teste, para investigar no banco |
 
+### Documentação e linhagem
 
+O dbt gera um site com a descrição de cada modelo e coluna, os testes e o grafo de linhagem (das tabelas da silver até a gold):
+
+```bash
+docker compose run --rm dbt docs generate
+docker compose run --rm --service-ports dbt docs serve --host 0.0.0.0 --port 8080
+# ou simplesmente: make dbt-docs
+```
+
+Depois é só abrir http://localhost:8085.
+
+![Linhagem do dbt: das sources da silver até a gold](docs/img/linhagem_dbt.png)
+
+## Estrutura
 
 ```
 ├── airflow/
