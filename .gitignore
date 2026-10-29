@@ -39,3 +39,6 @@ data/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Guia pessoal de comandos (só local)
+COMANDOS.md
