@@ -15,7 +15,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | 2. Ingestão bronze | Dados brutos no lake, carga incremental | ✅ código pronto (carga dos dados em andamento) |
 | 3. Silver com PySpark | Tabelas limpas + comparativo de performance | ✅ |
 | 4. Modelagem com dbt | Modelo dimensional testado | ✅ |
-| 5. Orquestração com Airflow | Pipeline diário automático | 🟡 código pronto (falta o print da DAG) |
+| 5. Orquestração com Airflow | Pipeline diário automático | ✅ |
 | 6. Qualidade e observabilidade | Painel de saúde do pipeline | ⏳ |
 | 7. Consumo | Dashboards + previsão de temperatura | ⏳ |
 | 8. CI/CD e documentação | Repositório com cara de produção | ⏳ |
