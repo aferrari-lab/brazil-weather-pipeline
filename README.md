@@ -74,6 +74,20 @@ python -m ingestion.clima --uf SP --reprocessar --inicio 2025-03-01 --fim 2025-0
 pytest -q                        # testes, sem precisar de internet nem do lake
 ```
 
+### Como os dados ficam no lake
+
+O bucket `lake` tem uma pasta por camada: `bronze/` (dado bruto da API), `silver/` (dado limpo pelo Spark) e `controle/` (o log de cada carga).
+
+![Camadas do lake: bronze, controle e silver](docs/img/lake_1_camadas.png)
+
+O bronze é particionado por ano, mês e UF (`ano=2025/mes=1/uf_sigla=SP/`). Quem lê só um mês ou um estado não precisa abrir o resto.
+
+![Partições por mês dentro de ano=2025](docs/img/lake_2_particoes.png)
+
+Dentro de cada partição há um arquivo Parquet por lote de carga, com nome aleatório (uuid). Isso é proposital: o bronze é *append-only*. Cada carga acrescenta um arquivo novo e nunca sobrescreve as anteriores, então duas cargas ao mesmo tempo não se atropelam e uma carga que falhe no meio não corrompe o que já existia. A deduplicação fica para a silver.
+
+![Arquivos Parquet de uma partição, um por lote de carga](docs/img/lake_3_arquivos.png)
+
 ## Spark
 
 O Spark roda num container Docker, sob demanda (não sobe com `docker compose up`). A imagem é a oficial do Apache Spark com os conectores do S3 (para o lake) e do Postgres.
