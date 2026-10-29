@@ -28,17 +28,17 @@ from {{ source('ops', 'log_cargas') }}
 {% else %}
 
 select
-    null::text         as id_execucao,
-    null::text         as processo,
-    null::text         as status,
-    null::timestamptz  as inicio,
-    null::timestamptz  as fim,
-    null::date         as dia,
-    null::numeric      as duracao_minutos,
-    null::bigint       as linhas_novas,
-    null::bigint       as chamadas_api,
-    null::text         as parametros,
-    null::text         as mensagem_erro
+    null::text as id_execucao,
+    null::text as processo,
+    null::text as status,
+    null::timestamptz as inicio,
+    null::timestamptz as fim,
+    null::date as dia,
+    null::numeric as duracao_minutos,
+    null::bigint as linhas_novas,
+    null::bigint as chamadas_api,
+    null::text as parametros,
+    null::text as mensagem_erro
 where false
 
 {% endif %}
