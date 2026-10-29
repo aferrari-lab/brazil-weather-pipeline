@@ -1,9 +1,12 @@
 # Ambiente local do pipeline: Postgres (warehouse + metadados do Airflow),
 # RustFS (data lake S3) e Airflow 3 com LocalExecutor.
 # Subir: docker compose up -d   |   Derrubar: docker compose down
+# 1ª vez (ou depois de mudar código de jobs/dbt): docker compose build
 
 x-airflow-common: &airflow-common
-  image: ${AIRFLOW_IMAGE:-apache/airflow:3.1.0}
+  # Imagem própria: a oficial + as bibliotecas da ingestão (ver airflow/Dockerfile).
+  build: ./airflow
+  image: brazil-weather-airflow:3.1.0
   env_file: .env
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -18,13 +21,18 @@ x-airflow-common: &airflow-common
     # Dentro da rede do Docker o lake é "lake:9000", não "localhost:9000" (que vem do .env).
     S3_ENDPOINT_URL: http://lake:9000
     AIRFLOW_CONN_LAKE: aws://${LAKE_ACCESS_KEY}:${LAKE_SECRET_KEY}@?endpoint_url=http%3A%2F%2Flake%3A9000
+    # Para as DAGs importarem o pacote ingestion/ (montado em /opt/airflow/ingestion)
+    # e as peças comuns de airflow/dags/orquestracao/.
+    PYTHONPATH: /opt/airflow:/opt/airflow/dags
+    # Por onde o Airflow pede ao Docker para rodar os containers do Spark e do dbt.
+    PIPELINE_DOCKER_URL: tcp://docker-proxy:2375
+    PIPELINE_REDE_DOCKER: brazil-weather
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
     - ./airflow/config:/opt/airflow/config
     - ./ingestion:/opt/airflow/ingestion
-    - ./dbt:/opt/airflow/dbt
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on: &airflow-depends
     postgres:
@@ -100,6 +108,22 @@ services:
 
   # Spark sob demanda: não sobe com "docker compose up". Cada job roda num
   # container que nasce e morre com ele:  docker compose run --rm spark
+  # Porteiro do Docker para o Airflow: em vez de dar ao Airflow o socket do Docker
+  # inteiro (que equivale a acesso de administrador à máquina), ele fala com este
+  # proxy, que só libera criar, iniciar, acompanhar e apagar containers.
+  # Não publica porta nenhuma: só é alcançável de dentro da rede do compose.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
   spark:
     build: ./spark
     image: brazil-weather-spark:3.5.6
@@ -142,7 +166,13 @@ services:
     environment:
       <<: *airflow-env
       _AIRFLOW_DB_MIGRATE: "true"
-    command: version
+    # Depois de migrar o banco, crio as filas (pools) que as DAGs usam.
+    command:
+      - bash
+      - -c
+      - |
+        airflow pools set api_open_meteo 1 "Uma carga por vez na API (cota diária compartilhada)"
+        airflow pools set transformacao 1 "Spark e dbt um de cada vez"
     restart: "no"
 
   airflow-apiserver:
@@ -166,6 +196,8 @@ services:
     command: scheduler
     depends_on:
       <<: *airflow-depends
+      docker-proxy:
+        condition: service_started
       airflow-init:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -187,6 +219,12 @@ services:
       airflow-init:
         condition: service_completed_successfully
     restart: unless-stopped
+
+# Nome fixo para a rede: os containers que o Airflow sobe (Spark, dbt) entram nela
+# pelo nome, e assim ele não depende do nome da pasta onde o projeto foi clonado.
+networks:
+  default:
+    name: brazil-weather
 
 volumes:
   pg_data:

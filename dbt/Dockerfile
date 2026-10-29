@@ -13,5 +13,9 @@ RUN useradd --create-home --uid 1000 dbt
 USER dbt
 
 WORKDIR /usr/app/dbt
+ENV DBT_PROFILES_DIR=/usr/app/dbt
+# O projeto dbt vai dentro da imagem para o Airflow rodá-lo. Pelo terminal, a
+# pasta dbt/ é montada por cima (docker-compose.yml), como no Spark.
+COPY --chown=dbt:dbt . /usr/app/dbt
 ENTRYPOINT ["dbt"]
 CMD ["build"]

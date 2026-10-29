@@ -1,0 +1,3 @@
+# Módulos de apoio das DAGs: o Airflow pode importá-los, mas não precisa
+# procurar DAGs dentro deles.
+orquestracao/

@@ -8,8 +8,9 @@ requires-python = ">=3.11"
 line-length = 100
 target-version = "py311"
 extend-exclude = ["airflow/logs", "dbt"]
-# Pastas onde ficam os módulos do projeto (os jobs Spark importam uns aos outros).
-src = [".", "spark/jobs"]
+# Pastas onde ficam os módulos do projeto (os jobs Spark importam uns aos outros,
+# e as DAGs importam o pacote orquestracao/).
+src = [".", "spark/jobs", "airflow/dags"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
@@ -18,7 +19,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 testpaths = ["tests"]
 # Coloco a raiz do projeto no caminho de importação, para os testes acharem
 # os pacotes do projeto (ex.: ingestion) rodando só "pytest".
-pythonpath = ["."]
+pythonpath = [".", "airflow/dags"]
 # Avisos internos do pyspark sobre APIs do pandas/Python que ele ainda usa: não
 # vêm do código do projeto, então escondo para não poluir a saída dos testes.
 filterwarnings = [
@@ -27,5 +28,9 @@ filterwarnings = [
 ]
 
 [tool.ruff.lint.isort]
-# Módulos do próprio projeto: "comum" é o módulo compartilhado dos jobs Spark.
-known-first-party = ["ingestion", "comum"]
+# Módulos do próprio projeto: "comum" é o módulo compartilhado dos jobs Spark e
+# "orquestracao" o das DAGs.
+known-first-party = ["ingestion", "comum", "orquestracao"]
+# A pasta airflow/ do projeto tem o mesmo nome do pacote do Airflow; sem esta linha,
+# algumas versões do ruff tratam "import airflow" como módulo do projeto.
+known-third-party = ["airflow"]

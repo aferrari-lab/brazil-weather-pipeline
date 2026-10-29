@@ -8,6 +8,8 @@ Executar (com o .venv ativo, na raiz do projeto e o lake no ar):
     python -m ingestion.clima --uf SP --limite 3     # teste rápido: 3 cidades de SP
     python -m ingestion.clima --uf SP                # SP inteiro (só o que falta)
     python -m ingestion.clima --uf SP --inicio 2025-03-01 --fim 2025-03-31 --reprocessar
+
+No dia a dia quem roda é o Airflow (DAG clima_diario), com carregar_clima_brasil.
 """
 
 import argparse
@@ -28,7 +30,12 @@ from ingestion.lake import (
     existe,
     ler_parquet,
 )
-from ingestion.log_cargas import Execucao, registrar_carga
+from ingestion.log_cargas import (
+    STATUS_LIMITE_API,
+    STATUS_SUCESSO,
+    Execucao,
+    registrar_carga,
+)
 from ingestion.municipios import CAMINHO_MUNICIPIOS, criar_sessao
 
 logger = logging.getLogger(__name__)
@@ -67,6 +74,10 @@ PAUSA_ENTRE_LOTES_SEGUNDOS = 60
 # Lake: uma pasta por ano, mês e UF. O bronze é "append-only": cada lote grava
 # arquivos novos e nada é reescrito. Se um dia aparecer mais de uma vez (um lote
 # refeito), a silver fica com a versão gravada por último.
+# Na carga do Brasil inteiro, estas UFs vêm primeiro (SP foi a primeira a ser
+# carregada); as demais seguem em ordem alfabética.
+UFS_PRIORITARIAS = ("SP",)
+
 CAMINHO_CLIMA = "bronze/clima_diario"
 PARTICOES = ["ano", "mes", "uf_sigla"]
 
@@ -426,8 +437,13 @@ def carregar_clima(
     reprocessar: bool = False,
     config: ConfigLake | None = None,
     sessao: requests.Session | None = None,
+    limite_e_erro: bool = True,
 ) -> None:
-    """Carrega o clima que falta para as UFs pedidas, uma UF por vez."""
+    """Carrega o clima que falta para as UFs pedidas, uma UF por vez.
+
+    Com limite_e_erro=False (a carga diária do Airflow), chegar ao limite da API é
+    registrado como aviso, e não como erro: ali isso é o esperado.
+    """
     if inicio > fim:
         raise ValueError(f"Data inicial {inicio} é posterior à final {fim}.")
 
@@ -475,13 +491,51 @@ def carregar_clima(
                 # As tentativas se esgotaram, o que costuma ser o limite diário da
                 # API. Os lotes já gravados estão no bronze: é só rodar de novo
                 # depois, que a carga continua de onde parou.
-                logger.error(
+                nivel = logging.ERROR if limite_e_erro else logging.WARNING
+                logger.log(
+                    nivel,
                     "%s: limite da API atingido. O progresso foi salvo; rode de novo "
                     "mais tarde que a carga continua de onde parou.",
                     uf,
                 )
                 raise
             logger.info("%s concluída: %d linha(s) nova(s) em %s.", uf, linhas, CAMINHO_CLIMA)
+
+
+def ordenar_ufs(ufs: list[str], prioridade: tuple[str, ...] = UFS_PRIORITARIAS) -> list[str]:
+    """Põe as UFs prioritárias na frente e o resto em ordem alfabética.
+
+    A ordem fixa importa: como cada execução para no limite diário da API, as UFs
+    já começadas ficam sempre na frente e recebem os dias novos primeiro (que custam
+    pouco). Só depois a cota que sobra vai para a próxima UF ainda não carregada.
+    """
+    ufs = sorted({uf.upper() for uf in ufs})
+    primeiras = [uf for uf in prioridade if uf in ufs]
+    return primeiras + [uf for uf in ufs if uf not in primeiras]
+
+
+def carregar_clima_brasil(
+    fim: date,
+    config: ConfigLake | None = None,
+    sessao: requests.Session | None = None,
+) -> str:
+    """Carrega o clima que falta para o Brasil inteiro, até onde a cota diária da API deixar.
+
+    É a carga que o Airflow roda todo dia. Chegar ao limite da API não é erro aqui:
+    o que foi gravado fica no bronze e a próxima execução continua de onde parou.
+    Devolve o status da carga ("sucesso" ou "limite_api").
+    """
+    config = config or carregar_config()
+    municipios = ler_parquet(CAMINHO_MUNICIPIOS, config, colunas=["uf_sigla"])
+    ufs = ordenar_ufs(municipios["uf_sigla"].astype(str).unique().tolist())
+    logger.info("Carga do Brasil até %s, nesta ordem: %s", fim, ", ".join(ufs))
+
+    try:
+        carregar_clima(ufs, DATA_INICIO, fim, config=config, sessao=sessao, limite_e_erro=False)
+    except requests.exceptions.RetryError:
+        logger.warning("Cota diária da API esgotada. O restante fica para a próxima execução.")
+        return STATUS_LIMITE_API
+    return STATUS_SUCESSO
 
 
 def _ler_argumentos() -> argparse.Namespace:

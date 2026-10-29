@@ -23,3 +23,18 @@ def test_env_example_cobre_variaveis_do_compose():
 
 def test_env_real_nao_versionado():
     assert ".env" in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+
+def test_docker_proxy_nao_fica_exposto_fora_do_compose():
+    # O proxy dá acesso ao Docker da máquina: não pode publicar porta no PC.
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    proxy = compose["services"]["docker-proxy"]
+    assert "ports" not in proxy
+    assert proxy["volumes"] == ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+
+
+def test_rede_tem_o_nome_que_as_dags_usam():
+    from orquestracao.containers import REDE_DOCKER
+
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert compose["networks"]["default"]["name"] == REDE_DOCKER

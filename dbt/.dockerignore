@@ -1,0 +1,7 @@
+# Fora da imagem: arquivos gerados pelo próprio dbt.
+target/
+logs/
+dbt_packages/
+.user.yml
+Dockerfile
+.dockerignore

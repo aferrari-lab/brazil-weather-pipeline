@@ -32,3 +32,7 @@ RUN pip install --no-cache-dir "pandas==2.2.3" "pyarrow==17.0.0"
 USER spark
 
 WORKDIR /opt/spark/jobs
+# Levo os jobs para dentro da imagem: é assim que o Airflow os roda. No uso pelo
+# terminal ("docker compose run spark"), a pasta spark/jobs é montada por cima,
+# então uma edição vale na hora, sem reconstruir.
+COPY --chown=spark:spark jobs/ /opt/spark/jobs/

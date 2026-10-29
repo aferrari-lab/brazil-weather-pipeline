@@ -1,0 +1,9 @@
+# Bibliotecas extras da imagem do Airflow. Sem versão aqui de propósito: quem fixa
+# as versões é o arquivo de constraints oficial do Airflow (ver airflow/Dockerfile).
+apache-airflow-providers-docker
+pandas
+pyarrow
+s3fs
+fsspec
+requests
+python-dotenv

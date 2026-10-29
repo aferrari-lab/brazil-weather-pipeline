@@ -14,8 +14,8 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | 1. Fundação | Ambiente sobe com um comando | ✅ |
 | 2. Ingestão bronze | Dados brutos no lake, carga incremental | ✅ código pronto (carga dos dados em andamento) |
 | 3. Silver com PySpark | Tabelas limpas + comparativo de performance | ✅ |
-| 4. Modelagem com dbt | Modelo dimensional testado | 🟡 em andamento |
-| 5. Orquestração com Airflow | Pipeline diário automático | ⏳ |
+| 4. Modelagem com dbt | Modelo dimensional testado | ✅ |
+| 5. Orquestração com Airflow | Pipeline diário automático | 🟡 código pronto (falta o print da DAG) |
 | 6. Qualidade e observabilidade | Painel de saúde do pipeline | ⏳ |
 | 7. Consumo | Dashboards + previsão de temperatura | ⏳ |
 | 8. CI/CD e documentação | Repositório com cara de produção | ⏳ |
@@ -47,7 +47,9 @@ python -m venv .venv
 pip install -r requirements-dev.txt
 pre-commit install
 
-# 3. Subir tudo
+# 3. Construir as imagens (1ª vez) e subir tudo
+docker compose build
+docker compose build spark dbt
 docker compose up -d
 docker compose ps           # aguarde todos ficarem "healthy"
 ```
@@ -78,7 +80,7 @@ pytest -q                        # testes, sem precisar de internet nem do lake
 
 O bucket `lake` tem uma pasta por camada: `bronze/` (dado bruto da API), `silver/` (dado limpo pelo Spark) e `controle/` (o log de cada carga).
 
-![Camadas do lake: bronze, controle e silver](docs/img/lake_1_camadas_.png)
+![Camadas do lake: bronze, controle e silver](docs/img/lake_1_camadas.png)
 
 O bronze é particionado por ano, mês e UF (`ano=2025/mes=1/uf_sigla=SP/`). Quem lê só um mês ou um estado não precisa abrir o resto.
 
@@ -140,11 +142,36 @@ Depois é só abrir http://localhost:8085.
 
 ![Linhagem do dbt: das sources da silver até a gold](docs/img/linhagem_dbt.png)
 
+## Airflow
+
+O Airflow junta tudo num pipeline diário. As DAGs ficam em `airflow/dags/`:
+
+| DAG | Quando roda | O que faz |
+| --- | --- | --- |
+| `clima_diario` | todo dia às 6h (Brasília) | ingestão → `silver_clima` (Spark) → `silver_postgres` (Spark) → `dbt build` |
+| `clima_reprocessar` | manual, com UFs e período | refaz a ingestão do período pedido e propaga até a gold |
+| `smoke_test` | manual | confere se o Airflow alcança o Postgres e o lake |
+
+```bash
+docker compose build                # 1ª vez: imagem do Airflow com as bibliotecas da ingestão
+docker compose build spark dbt      # imagens dos jobs (de novo sempre que mudar um job ou modelo)
+docker compose up -d
+```
+
+Depois, em http://localhost:8081 (a `AIRFLOW_PORT` do `.env`), ative a DAG `clima_diario`. Para reprocessar um período, use o botão **Trigger** na `clima_reprocessar` ou `make airflow-reprocessar UF=SP INICIO=2025-03-01 FIM=2025-03-31`.
+
+Como a ingestão para no limite diário da API sem falhar, a carga histórica do Brasil inteiro acontece sozinha, uma fatia por dia, e as UFs já carregadas recebem os dias novos primeiro.
+
+![Grafo da DAG clima_diario: ingestão, silver, Postgres e dbt, todas com sucesso](docs/img/airflow_dag.png)
+
+**Alerta de falha:** toda falha vai para o log. Para receber também no Telegram, coloque `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` no `.env`.
+
 ## Estrutura
 
 ```
 ├── airflow/
-│   ├── dags/          # DAGs (smoke_test.py já incluída)
+│   ├── Dockerfile     # imagem do Airflow + bibliotecas da ingestão
+│   ├── dags/          # clima_diario, clima_reprocessar, smoke_test e orquestracao/ (peças comuns)
 │   ├── plugins/
 │   ├── config/
 │   └── logs/          # gerado em runtime, fora do Git
@@ -175,6 +202,10 @@ Depois é só abrir http://localhost:8085.
 - **Testes genéricos próprios no dbt** (`combinacao_unica`, `entre`) em vez de instalar um pacote só para eles: poucas linhas, sem dependência externa. Falhas ficam gravadas no schema `testes_falhas` (`store_failures`), e a faixa de temperatura é aviso (não erro), porque a silver já marca o dado como suspeito.
 - **Fato incremental com janela móvel:** `fct_clima_diario` processa só o que a silver reprocessou. Como a média móvel de 7 dias de um dia depende dos 6 anteriores, quando um dia muda eu reprocesso também os 6 seguintes do município. Um teste comparando o incremental com uma reconstrução completa (`--full-refresh`) pegou esse caso; agora os dois dão resultado idêntico. O teste singular `assert_fato_tem_todas_as_linhas_da_staging` garante que o incremental não perde nem sobra linhas.
 - **Anomalia mensal sobre histórico curto:** `agg_clima_mensal` compara cada mês com a média do mesmo mês no histórico do município. Com dados desde 2025, essa média usa 1 ou 2 anos (a coluna `anos_na_media_historica` deixa isso explícito); na climatologia o padrão são 30 anos.
+- **Airflow orquestra, não processa:** a ingestão (Python leve) roda dentro do Airflow, mas o Spark e o dbt rodam nas próprias imagens, que o Airflow sobe com o `DockerOperator`. Assim não instalo Java e Spark na imagem do Airflow, e o job roda no Airflow exatamente como roda pelo terminal. O código dos jobs vai dentro das imagens, como num deploy de verdade.
+- **Docker por um proxy:** o Airflow não recebe o socket do Docker (equivale a ser administrador da máquina). Ele fala com o `docker-socket-proxy`, que só libera criar, acompanhar e apagar containers e não publica porta para fora.
+- **Catchup desligado de propósito:** a ingestão descobre o que falta olhando o bronze, não a data da execução, então a execução de hoje já recupera dias perdidos. A data lógica (`{{ ds }}`) define só a data final, para uma execução refeita pedir o mesmo período. Uma DAG manual cuida dos reprocessamentos.
+- **Filas (pools) no Airflow:** `api_open_meteo` com uma vaga (duas cargas dividiriam a mesma cota diária) e `transformacao` com uma vaga (Spark e dbt um de cada vez, sem disputar memória nem ler a silver no meio de uma regravação).
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças
