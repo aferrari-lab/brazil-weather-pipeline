@@ -7,11 +7,11 @@ with origem as (
 )
 
 select
-    codigo_ibge::bigint            as codigo_ibge,
-    municipio::varchar             as municipio,
-    uf_sigla::varchar(2)           as uf_sigla,
-    regiao::varchar                as regiao,
-    latitude::numeric(9, 6)        as latitude,
-    longitude::numeric(9, 6)       as longitude
+    codigo_ibge::bigint as codigo_ibge,
+    municipio::varchar as municipio,
+    uf_sigla::varchar(2) as uf_sigla,
+    regiao::varchar as regiao,
+    latitude::numeric(9, 6) as latitude,
+    longitude::numeric(9, 6) as longitude
 
 from origem

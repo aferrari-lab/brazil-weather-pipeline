@@ -1,11 +1,28 @@
 # brazil-weather-pipeline
 
+[![CI](https://github.com/aferrari-lab/brazil-weather-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/aferrari-lab/brazil-weather-pipeline/actions/workflows/ci.yml)
+
 Pipeline de engenharia de dados de ponta a ponta com o clima diário de todos os municípios brasileiros desde 2025 ([Open-Meteo](https://open-meteo.com/) + IBGE), do data lake ao dashboard e à previsão de temperatura.
 
+```mermaid
+flowchart LR
+    OM["Open-Meteo<br/>clima diário"] --> ING["Ingestão<br/>Python"]
+    IBGE["IBGE<br/>municípios"] --> ING
+    ING --> BRONZE[("Bronze<br/>Parquet no lake")]
+    BRONZE --> SPARK["PySpark"]
+    SPARK --> SILVER[("Silver<br/>lake + Postgres")]
+    SILVER --> DBT["dbt"]
+    DBT --> GOLD[("Gold<br/>modelo estrela")]
+    DBT --> OBS[("Observabilidade")]
+    DBT --> FEAT[("Features de ML")]
+    FEAT --> ML["Previsão<br/>scikit-learn"]
+    ML --> PREV[("Previsões")]
+    GOLD --> MB["Metabase"]
+    OBS --> MB
+    PREV --> MB
 ```
-Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → Gold (dbt + Postgres) → Metabase
-                    └──────────────── orquestrado pelo Airflow ────────────────┘
-```
+
+Tudo roda em containers Docker e é orquestrado pelo Airflow, uma vez por dia. O lake é o RustFS (compatível com S3) e o warehouse é o Postgres.
 
 ## Status
 
@@ -18,7 +35,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | 5. Orquestração com Airflow | Pipeline diário automático | ✅ |
 | 6. Qualidade e observabilidade | Painel de saúde do pipeline | ✅ |
 | 7. Consumo | Dashboards + previsão de temperatura | ✅ |
-| 8. CI/CD e documentação | Repositório com cara de produção | ⏳ |
+| 8. CI/CD e documentação | Repositório com cara de produção | ✅ |
 
 ## Stack
 
@@ -31,7 +48,9 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | Transformação | dbt 1.10 (em container Docker) |
 | Orquestração | Apache Airflow 3 (LocalExecutor) |
 | BI | Metabase |
-| Qualidade de código | ruff, pre-commit, pytest |
+| Machine learning | scikit-learn (gradient boosting) |
+| CI | GitHub Actions |
+| Qualidade de código | ruff, sqlfluff, pre-commit, pytest |
 
 ## Como rodar
 
@@ -231,6 +250,8 @@ No painel "Clima do Brasil", por enquanto só aparece o Sudeste, porque SP é a 
 ├── spark/             # Dockerfile do Spark e jobs PySpark em spark/jobs/ (Fase 3)
 ├── dbt/               # projeto dbt: models/ (staging → marts, observabilidade), testes genéricos próprios
 ├── ml/                # job de previsão de temperatura (Dockerfile + previsao.py)
+├── ci/                # silver de amostra para o CI rodar o dbt sem lake nem API
+├── .github/workflows/ # CI: lint, testes, DAGs, dbt + previsão, imagens Docker
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops
 ├── notebooks/         # exploração
 ├── tests/
@@ -264,6 +285,7 @@ No painel "Clima do Brasil", por enquanto só aparece o Sudeste, porque SP é a 
 - **Previsão avaliada contra palpites simples:** um MAE sozinho não diz nada. A pergunta certa é se o modelo erra menos que "amanhã igual a hoje". Por isso a tabela de avaliação sempre traz a persistência e a média sazonal ao lado do modelo, e o job avisa no log quando o modelo não bate a persistência.
 - **Sem vazamento de dados:** toda feature usa só dias anteriores ao previsto, a separação treino/teste é por data (sem embaralhar) e a média sazonal é calculada só com o treino.
 - **Previsão publicada é imutável:** a previsão do próximo dia é gravada uma vez (`ON CONFLICT DO NOTHING`), antes de o dado real existir. Comparar com o real depois é uma avaliação honesta, que um modelo retreinado não consegue maquiar.
+- **CI com banco de verdade:** o GitHub Actions sobe um Postgres, grava uma silver sintética (seis capitais, mesmo schema da real) e roda o `dbt build`, o sqlfluff e o job de previsão. Os testes do Spark, que no Windows são pulados por falta de Java, rodam no CI com o Java instalado, e as DAGs são carregadas num Airflow 3.1 de verdade. Um job à parte constrói as quatro imagens Docker.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças
@@ -286,5 +308,11 @@ Este projeto roda inteiro na minha máquina, com escolhas pensadas para estudo. 
 | Processamento | PySpark local | Spark gerenciado (EMR, Dataproc, Databricks), dimensionado pelo volume. |
 | Observabilidade | Modelos dbt próprios + painel no Metabase | elementary (ou Monte Carlo, Datadog) para histórico de testes e detecção de anomalias, com alertas no canal do time. |
 | Metabase | Metadados num arquivo H2 e acesso com o usuário do warehouse | Metadados num Postgres e um usuário só de leitura para o BI. |
+| CI/CD | CI no GitHub Actions; o "deploy" é rodar `docker compose build` | CD de verdade: as imagens publicadas num registry com a versão do commit, deploy automático em homologação e com aprovação em produção, e "slim CI" no dbt (`state:modified+`), que testa só os modelos alterados. |
+| Fonte de dados | API gratuita da Open-Meteo | A API gratuita é para uso não comercial. Em produção, um plano pago (com mais cota e SLA) ou uma API própria em cima dos dados abertos de reanálise (ERA5). |
 
-> Seção em evolução: será completada na Fase 8 com custos, monitoramento e segurança.
+**Monitoramento.** O alerta de falha (log e Telegram) iria para o canal de plantão do time, como Slack ou PagerDuty, com SLA por DAG ("dados de ontem prontos até as 8h"). As métricas do pipeline (duração, linhas e cota da API consumida) iriam para Prometheus e Grafana, com alarme de tendência, e não só de falha.
+
+**Segurança.** Cada serviço teria um usuário com o mínimo de permissão: o BI só lê a gold, e o Spark só escreve na silver. O acesso ao lake seria por papel de IAM em vez de chave fixa, e os dados ficariam criptografados em repouso e em trânsito (TLS), numa rede privada, sem portas expostas. O acesso do Airflow ao Docker já passa por um proxy que só libera criar e acompanhar containers.
+
+**Custos.** O volume é pequeno: cerca de 2 milhões de linhas por ano, poucos GB em Parquet. Armazenamento em S3 custaria centavos por mês, e o maior custo seria o banco gerenciado e o Airflow, na casa das dezenas de dólares por mês em instâncias pequenas. Para esse volume, o Spark é mais do que o necessário: pandas ou DuckDB dariam conta com custo menor. Eu o usei para estudar e porque o mesmo código escala, sem mudar, para dados horários ou de vários países. Em produção, eu decidiria pelo volume real e mediria antes; o comparativo pandas × PySpark deste repositório é esse tipo de medição.

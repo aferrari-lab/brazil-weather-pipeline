@@ -7,11 +7,11 @@
 select
     id_execucao,
     executado_em,
-    (executado_em at time zone 'America/Sao_Paulo')::date  as dia,
+    (executado_em at time zone 'America/Sao_Paulo')::date as dia,
     comando,
-    nome                                                    as teste,
+    nome as teste,
     status,
-    coalesce(falhas, 0)                                     as falhas,
+    coalesce(falhas, 0) as falhas,
     duracao_segundos,
     mensagem
 from {{ source('observabilidade', 'dbt_resultados') }}

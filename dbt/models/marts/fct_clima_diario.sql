@@ -32,9 +32,13 @@ with metricas as (
 alterados as (
 
     -- Dias que a silver (re)processou depois da última carga desta tabela.
-    select codigo_ibge, data
+    select
+        metricas.codigo_ibge,
+        metricas.data
     from metricas
-    where processado_em > (select coalesce(max(processado_em), '1900-01-01') from {{ this }})
+    where
+        metricas.processado_em
+        > (select coalesce(max(atual.processado_em), '1900-01-01') from {{ this }} as atual)
 
 ),
 
@@ -45,8 +49,9 @@ a_reprocessar as (
     select distinct m.*
     from metricas as m
     inner join alterados as a
-        on m.codigo_ibge = a.codigo_ibge
-        and m.data between a.data and a.data + 6
+        on
+            m.codigo_ibge = a.codigo_ibge
+            and m.data between a.data and a.data + 6
 
 )
 
@@ -76,8 +81,8 @@ select
     dia_de_chuva,
 
     -- Médias e acumulados móveis de 7 dias
-    round(temp_media_movel_7d_c, 1)  as temp_media_movel_7d_c,
-    round(chuva_acumulada_7d_mm, 1)  as chuva_acumulada_7d_mm,
+    round(temp_media_movel_7d_c, 1) as temp_media_movel_7d_c,
+    round(chuva_acumulada_7d_mm, 1) as chuva_acumulada_7d_mm,
     dias_na_janela_7d,
 
     -- Qualidade

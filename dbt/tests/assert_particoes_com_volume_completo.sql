@@ -10,7 +10,7 @@ select
     mes,
     linhas,
     linhas_esperadas,
-    linhas_esperadas - linhas  as linhas_faltando
+    linhas_esperadas - linhas as linhas_faltando
 from {{ ref('obs_volume_particao') }}
 where mes_fechado
-  and linhas < linhas_esperadas
+    and linhas < linhas_esperadas

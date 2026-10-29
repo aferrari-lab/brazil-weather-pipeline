@@ -1,0 +1,19 @@
+# Lint de SQL dos modelos dbt (roda no CI). As regras seguem o estilo do projeto:
+# palavras-chave em minúsculas e o layout padrão do sqlfluff ("sqlfluff fix" ajusta).
+[sqlfluff]
+dialect = postgres
+templater = dbt
+max_line_length = 100
+# ST06: prefiro ordenar as colunas por assunto (chaves, medidas, qualidade), não
+#       "simples primeiro". RF04: nomes de coluna em português como "data" e "mes"
+#       coincidem com palavras-chave do SQL, mas são os nomes do domínio.
+exclude_rules = ST06, RF04
+
+[sqlfluff:templater:dbt]
+project_dir = .
+profiles_dir = .
+
+[sqlfluff:indentation]
+allow_implicit_indents = true
+# Blocos {% if %} do Jinja não contam como um nível a mais de indentação.
+template_blocks_indent = false
