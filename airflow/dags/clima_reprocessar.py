@@ -16,6 +16,7 @@ from airflow.sdk import Param, dag, task
 
 from orquestracao.alertas import avisar_falha
 from orquestracao.containers import tarefa_dbt, tarefa_spark
+from orquestracao.observabilidade import tarefa_publicar_log_cargas
 
 POOL_API = "api_open_meteo"
 
@@ -56,7 +57,12 @@ def clima_reprocessar():
     postgres = tarefa_spark("silver_postgres", "silver_postgres.py")
     dbt = tarefa_dbt("dbt_build", "build")
 
-    reprocessar_clima() >> silver >> postgres >> dbt
+    ingestao = reprocessar_clima()
+    log = tarefa_publicar_log_cargas()
+
+    ingestao >> silver >> postgres
+    ingestao >> log
+    [postgres, log] >> dbt
 
 
 clima_reprocessar()

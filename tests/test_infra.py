@@ -38,3 +38,10 @@ def test_rede_tem_o_nome_que_as_dags_usam():
 
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     assert compose["networks"]["default"]["name"] == REDE_DOCKER
+
+
+def test_metabase_guarda_metadados_em_volume():
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    metabase = compose["services"]["metabase"]
+    assert "metabase_data:/metabase-data" in metabase["volumes"]
+    assert "metabase_data" in compose["volumes"]

@@ -20,6 +20,7 @@ O dbt começa onde o Spark termina: ele lê as tabelas `silver.clima_diario` e
 | Staging | `staging` | view | `stg_clima_diario`, `stg_municipios`: nomes e tipos padronizados, sem regra de negócio |
 | Intermediate | `intermediate` | view | `int_clima_metricas`: média móvel e chuva acumulada de 7 dias corridos |
 | Gold | `gold` | tabela | `dim_municipio`, `dim_data`, `fct_clima_diario` (incremental), `agg_clima_mensal` |
+| Observabilidade | `observabilidade` | tabela | `obs_cobertura_diaria`, `obs_cobertura_uf`, `obs_volume_particao`, `obs_cargas`, `obs_resultados_testes`: a saúde do próprio pipeline |
 
 ## Como eu garanto a qualidade
 
@@ -28,6 +29,8 @@ O dbt começa onde o Spark termina: ele lê as tabelas `silver.clima_diario` e
   e `entre`) e um teste que confere se o fato tem todas as linhas da staging.
 - **Freshness** da source: aviso se a silver ficar 2 dias sem atualizar, erro com 7.
 - **Falhas gravadas** no schema `testes_falhas`, para investigar as linhas no banco.
+- **Histórico de execuções:** cada `dbt build` grava o resultado de cada modelo e teste em `observabilidade.dbt_resultados`.
+- **Alerta de volume:** todo mês fechado precisa ter exatamente municípios × dias linhas por UF.
 
 ## Decisões que vale conhecer
 

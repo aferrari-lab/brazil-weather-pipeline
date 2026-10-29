@@ -1,0 +1,74 @@
+version: 2
+
+sources:
+  - name: ops
+    description: Tabelas de controle gravadas pelo Airflow.
+    schema: ops
+    tables:
+      - name: log_cargas
+        description: >
+          Cópia do log de cargas do lake (controle/log_cargas/), feita pela tarefa
+          publicar_log_cargas das DAGs. Uma linha por execução da ingestão.
+
+  - name: observabilidade
+    description: Tabelas que o próprio dbt grava sobre as suas execuções.
+    schema: observabilidade
+    tables:
+      - name: dbt_resultados
+        description: >
+          Resultado de cada modelo e teste em cada execução do dbt, gravado pelo
+          hook on-run-end (macros/resultados_dbt.sql).
+
+models:
+  - name: obs_cobertura_diaria
+    description: >
+      Cobertura por dia: quantos municípios buscáveis (com coordenada) têm dado
+      em cada dia, até o último dia carregado.
+    columns:
+      - name: data
+        tests: [unique, not_null]
+      - name: pct_cobertura
+        description: Municípios com dado no dia / municípios buscáveis, em %.
+        tests:
+          - entre:
+              arguments: {minimo: 0, maximo: 100}
+
+  - name: obs_cobertura_uf
+    description: Situação da carga por UF (não iniciada, em carga, completa).
+    columns:
+      - name: uf_sigla
+        tests: [unique, not_null]
+      - name: situacao
+        tests:
+          - accepted_values:
+              arguments:
+                values: [não iniciada, em carga, completa]
+
+  - name: obs_volume_particao
+    description: >
+      Linhas por UF e mês contra as esperadas (municípios iniciados × dias). Em
+      mês fechado as duas precisam bater; o teste assert_particoes_com_volume_completo
+      cobra isso.
+    tests:
+      - combinacao_unica:
+          arguments:
+            colunas: [uf_sigla, ano, mes]
+    columns:
+      - name: mes_fechado
+        description: O mês termina antes do último dia que todos os municípios iniciados da UF já têm.
+      - name: pct_do_esperado
+        description: Linhas / linhas esperadas, em %.
+
+  - name: obs_cargas
+    description: Uma linha por execução da ingestão (status, duração, linhas e chamadas à API).
+    columns:
+      - name: id_execucao
+        tests: [unique, not_null]
+      - name: status
+        tests:
+          - accepted_values:
+              arguments:
+                values: [sucesso, limite_api, erro, interrompida]
+
+  - name: obs_resultados_testes
+    description: Histórico dos testes do dbt, uma linha por teste em cada execução anterior.

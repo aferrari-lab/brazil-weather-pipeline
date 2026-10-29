@@ -16,7 +16,7 @@ Fontes (Open-Meteo, IBGE) → Bronze (RustFS, Parquet) → Silver (PySpark) → 
 | 3. Silver com PySpark | Tabelas limpas + comparativo de performance | ✅ |
 | 4. Modelagem com dbt | Modelo dimensional testado | ✅ |
 | 5. Orquestração com Airflow | Pipeline diário automático | ✅ |
-| 6. Qualidade e observabilidade | Painel de saúde do pipeline | ⏳ |
+| 6. Qualidade e observabilidade | Painel de saúde do pipeline | ✅ |
 | 7. Consumo | Dashboards + previsão de temperatura | ⏳ |
 | 8. CI/CD e documentação | Repositório com cara de produção | ⏳ |
 
@@ -58,6 +58,7 @@ docker compose ps           # aguarde todos ficarem "healthy"
 | --- | --- | --- |
 | Airflow | http://localhost:8080 (ou a `AIRFLOW_PORT` do `.env`) | sem login (modo dev) |
 | RustFS console | http://localhost:9001 | `LAKE_ACCESS_KEY` / `LAKE_SECRET_KEY` |
+| Metabase | http://localhost:3000 | conta criada no primeiro acesso |
 | Postgres | `localhost:5432` | `WAREHOUSE_USER` / `WAREHOUSE_PASSWORD` |
 
 **Verificação:** no Airflow, ative e dispare a DAG `smoke_test`. Ela confirma a conexão com o Postgres e com o lake.
@@ -166,6 +167,28 @@ Como a ingestão para no limite diário da API sem falhar, a carga histórica do
 
 **Alerta de falha:** toda falha vai para o log. Para receber também no Telegram, coloque `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` no `.env`.
 
+## Observabilidade
+
+Para saber se o pipeline está saudável sem abrir log nenhum, o dbt mantém o schema `observabilidade`, que alimenta o painel de saúde no Metabase:
+
+| Modelo | O que responde |
+| --- | --- |
+| `obs_cobertura_diaria` | Em quantos dos municípios buscáveis cada dia tem dado (é o avanço da carga do Brasil) |
+| `obs_cobertura_uf` | A situação de cada UF: não iniciada, em carga ou completa, e até que dia |
+| `obs_volume_particao` | Linhas por UF e mês contra as esperadas (municípios × dias) |
+| `obs_cargas` | Cada execução da ingestão: status, duração, linhas novas e chamadas à API |
+| `obs_resultados_testes` | O histórico dos testes do dbt em cada execução |
+
+O que alimenta esses modelos:
+- **Log das cargas:** cada carga grava uma linha no lake (`controle/log_cargas/`), e a tarefa `publicar_log_cargas` do Airflow copia esse log para `ops.log_cargas`. Ela roda mesmo quando a ingestão falha, porque o registro de uma falha é o mais útil.
+- **Histórico do dbt:** a cada execução, um hook `on-run-end` grava o resultado de cada modelo e teste em `observabilidade.dbt_resultados`. O dbt sozinho guarda só a última execução.
+- **Alerta de volume:** o teste `assert_particoes_com_volume_completo` cobra que todo mês fechado tenha exatamente municípios × dias linhas. Se faltar alguma, o `dbt build` falha e o Airflow manda o alerta.
+- **Freshness da silver:** aviso com 2 dias sem atualização e erro com 7.
+
+![Painel de saúde do pipeline no Metabase](docs/img/metabase_saude.png)
+
+Como ler o painel: o quanto do Brasil já foi carregado e a situação de cada UF (no print, SP em carga e as demais na fila), as execuções da ingestão por status e os testes do dbt. A tabela **"Partições com dado faltando" vazia é o resultado esperado**: nenhum mês fechado perdeu linhas. Os dois erros do dia 28 foram respostas inválidas da API, antes de existir o tratamento para elas (`RespostaInvalidaError`).
+
 ## Estrutura
 
 ```
@@ -177,7 +200,7 @@ Como a ingestão para no limite diário da API sem falhar, a carga histórica do
 │   └── logs/          # gerado em runtime, fora do Git
 ├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas), clima.py (Open-Meteo)
 ├── spark/             # Dockerfile do Spark e jobs PySpark em spark/jobs/ (Fase 3)
-├── dbt/               # projeto dbt: models/ (staging → marts), testes genéricos próprios (Fase 4)
+├── dbt/               # projeto dbt: models/ (staging → marts, observabilidade), testes genéricos próprios
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops
 ├── notebooks/         # exploração
 ├── tests/
@@ -206,6 +229,8 @@ Como a ingestão para no limite diário da API sem falhar, a carga histórica do
 - **Docker por um proxy:** o Airflow não recebe o socket do Docker (equivale a ser administrador da máquina). Ele fala com o `docker-socket-proxy`, que só libera criar, acompanhar e apagar containers e não publica porta para fora.
 - **Catchup desligado de propósito:** a ingestão descobre o que falta olhando o bronze, não a data da execução, então a execução de hoje já recupera dias perdidos. A data lógica (`{{ ds }}`) define só a data final, para uma execução refeita pedir o mesmo período. Uma DAG manual cuida dos reprocessamentos.
 - **Filas (pools) no Airflow:** `api_open_meteo` com uma vaga (duas cargas dividiriam a mesma cota diária) e `transformacao` com uma vaga (Spark e dbt um de cada vez, sem disputar memória nem ler a silver no meio de uma regravação).
+- **Observabilidade com modelos dbt próprios, sem pacote externo:** o histórico dos testes vem de um hook `on-run-end` de poucas linhas, e a cobertura e o volume são modelos SQL comuns. Pacotes como o elementary fazem isso com mais recursos; aqui eu quis que cada peça fosse explicável.
+- **Alerta de volume por contagem exata:** como cada município iniciado recebe o histórico inteiro de uma vez, dá para saber exatamente quantas linhas cada UF deve ter em cada mês. Isso é mais preciso que comparar com a média dos meses anteriores, e não dispara falso alarme enquanto o Brasil ainda está sendo carregado, porque só cobra os municípios já iniciados e os meses fechados.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças
@@ -226,5 +251,7 @@ Este projeto roda inteiro na minha máquina, com escolhas pensadas para estudo. 
 | Segredos | Arquivo `.env` | Secrets Manager, Vault ou o secrets backend do próprio Airflow. |
 | Imagens | Tag `latest` em parte dos serviços | Versões fixas e atualizadas de forma controlada. |
 | Processamento | PySpark local | Spark gerenciado (EMR, Dataproc, Databricks), dimensionado pelo volume. |
+| Observabilidade | Modelos dbt próprios + painel no Metabase | elementary (ou Monte Carlo, Datadog) para histórico de testes e detecção de anomalias, com alertas no canal do time. |
+| Metabase | Metadados num arquivo H2 e acesso com o usuário do warehouse | Metadados num Postgres e um usuário só de leitura para o BI. |
 
 > Seção em evolução: será completada na Fase 8 com custos, monitoramento e segurança.

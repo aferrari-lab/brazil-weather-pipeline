@@ -13,7 +13,7 @@ import requests
 
 from ingestion import clima
 from ingestion.lake import ConfigLake
-from orquestracao import alertas, containers
+from orquestracao import alertas, containers, observabilidade
 
 CONFIG = ConfigLake(raiz="memory://lake", storage_options={})
 
@@ -165,3 +165,77 @@ def test_dag_diaria_nao_faz_catchup_e_roda_uma_por_vez(dagbag):
     assert dag.max_active_runs == 1
     assert dag.get_task("ingerir_clima").pool == "api_open_meteo"
     assert dag.get_task("dbt_build").pool == "transformacao"
+
+
+# --- Log de cargas no Postgres ---
+class HookFalso:
+    """Registra o que seria mandado ao Postgres, sem banco."""
+
+    def __init__(self):
+        self.comandos, self.inseridos = [], []
+
+    def run(self, sql):
+        self.comandos.extend(sql)
+
+    def insert_rows(self, tabela, linhas, target_fields, replace, replace_index):
+        self.inseridos.append((tabela, linhas, target_fields, replace, replace_index))
+
+
+def _log_exemplo():
+    log = pd.DataFrame(
+        {
+            "id_execucao": ["a1", "a2"],
+            "processo": ["clima", "clima"],
+            "status": ["sucesso", "erro"],
+            "inicio": pd.to_datetime(["2026-10-28 09:00", "2026-10-29 09:00"], utc=True),
+            "fim": pd.to_datetime(["2026-10-28 09:30", None], utc=True),
+            "duracao_segundos": [1800.0, float("nan")],
+            "linhas_novas": pd.array([640, None], dtype="Int64"),
+            "chamadas_api": pd.array([2, 0], dtype="Int64"),
+            "parametros": ['{"ufs": ["SP"]}', None],
+            "mensagem_erro": [None, "lake fora do ar"],
+        }
+    )
+    return log
+
+
+def test_linhas_do_log_trocam_vazios_do_pandas_por_none():
+    linhas = observabilidade.linhas_do_log(_log_exemplo())
+
+    assert len(linhas) == 2
+    segunda = dict(zip(observabilidade.COLUNAS_LOG, linhas[1], strict=True))
+    assert segunda["fim"] is None
+    assert segunda["duracao_segundos"] is None
+    assert segunda["linhas_novas"] is None
+    assert isinstance(
+        dict(zip(observabilidade.COLUNAS_LOG, linhas[0], strict=True))["linhas_novas"], int
+    )
+
+
+def test_publicar_log_cria_tabela_e_faz_upsert_por_execucao():
+    hook = HookFalso()
+
+    enviadas = observabilidade.publicar_log(hook, _log_exemplo())
+
+    assert enviadas == 2
+    assert any("CREATE TABLE IF NOT EXISTS ops.log_cargas" in c for c in hook.comandos)
+    tabela, _, colunas, replace, indice = hook.inseridos[0]
+    assert (tabela, replace, indice) == ("ops.log_cargas", True, "id_execucao")
+    assert colunas == observabilidade.COLUNAS_LOG
+
+
+def test_publicar_log_vazio_so_garante_a_tabela():
+    hook = HookFalso()
+
+    assert (
+        observabilidade.publicar_log(hook, pd.DataFrame(columns=observabilidade.COLUNAS_LOG)) == 0
+    )
+    assert hook.inseridos == []
+
+
+def test_log_publicado_antes_do_dbt_e_mesmo_se_a_ingestao_falhar(dagbag):
+    for dag_id in ("clima_diario", "clima_reprocessar"):
+        tarefa = dagbag.dags[dag_id].get_task("publicar_log_cargas")
+
+        assert tarefa.trigger_rule == "all_done"
+        assert "dbt_build" in tarefa.downstream_task_ids

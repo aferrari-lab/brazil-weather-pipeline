@@ -7,7 +7,10 @@ Roda todo dia às 6h (horário de Brasília):
    (semanas de cota) acontece sozinha, uma fatia por dia;
 2. silver_clima: o Spark limpa e deduplica só as partições que receberam dado novo;
 3. silver_postgres: leva essas partições para o Postgres;
-4. dbt_build: atualiza a gold e roda os testes de dados.
+4. dbt_build: atualiza a gold e os modelos de observabilidade e roda os testes.
+
+Em paralelo, publicar_log_cargas copia o log das cargas do lake para o Postgres
+(ops.log_cargas), para o painel de saúde. Ela roda mesmo se a ingestão falhar.
 
 Sobre catchup: fica desligado de propósito. A ingestão não depende da data da
 execução para saber o que buscar (ela olha o que falta no bronze), então uma
@@ -22,6 +25,7 @@ from airflow.sdk import dag, task
 
 from orquestracao.alertas import avisar_falha
 from orquestracao.containers import tarefa_dbt, tarefa_spark
+from orquestracao.observabilidade import tarefa_publicar_log_cargas
 
 # Uma carga por vez na API: duas ao mesmo tempo dividiriam a mesma cota diária.
 POOL_API = "api_open_meteo"
@@ -68,7 +72,12 @@ def clima_diario():
     postgres = tarefa_spark("silver_postgres", "silver_postgres.py")
     dbt = tarefa_dbt("dbt_build", "build", retries=1)
 
-    ingerir_clima() >> silver >> postgres >> dbt
+    ingestao = ingerir_clima()
+    log = tarefa_publicar_log_cargas()
+
+    ingestao >> silver >> postgres
+    ingestao >> log
+    [postgres, log] >> dbt
 
 
 clima_diario()

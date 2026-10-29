@@ -157,12 +157,18 @@ def registrar_carga(
         )
 
 
-def ler_log(config: ConfigLake, ultimas: int = 20) -> pd.DataFrame:
-    """Devolve as últimas execuções registradas, da mais recente para a mais antiga."""
+def ler_log(config: ConfigLake, ultimas: int | None = 20) -> pd.DataFrame:
+    """Devolve as últimas execuções registradas, da mais recente para a mais antiga.
+
+    Com ultimas=None, devolve o histórico inteiro.
+    """
     if not existe(CAMINHO_LOG, config):
-        return pd.DataFrame()
+        return pd.DataFrame(columns=SCHEMA_LOG.names)
     log = ler_parquet(CAMINHO_LOG, config, schema=SCHEMA_LOG)
-    return log.sort_values("inicio", ascending=False).head(ultimas).reset_index(drop=True)
+    log = log.sort_values("inicio", ascending=False)
+    if ultimas is not None:
+        log = log.head(ultimas)
+    return log.reset_index(drop=True)
 
 
 if __name__ == "__main__":

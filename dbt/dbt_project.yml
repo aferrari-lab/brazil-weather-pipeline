@@ -28,6 +28,11 @@ models:
     marts:
       +schema: gold
       +materialized: table
+    # Observabilidade: a saúde do próprio pipeline (cobertura, volume, cargas e
+    # testes), para o painel do Metabase. Tabelas pequenas, recalculadas inteiras.
+    observabilidade:
+      +schema: observabilidade
+      +materialized: table
 
 vars:
   # Início do histórico do projeto (o mesmo da ingestão do Open-Meteo).
@@ -35,6 +40,12 @@ vars:
   # Chuva a partir da qual o dia conta como "dia de chuva" (critério usual em
   # climatologia).
   limite_dia_chuva_mm: 1.0
+
+# Histórico de cada execução do dbt (ver macros/resultados_dbt.sql).
+on-run-start:
+  - "{{ criar_tabela_resultados() }}"
+on-run-end:
+  - "{{ registrar_resultados(results) }}"
 
 tests:
   brazil_weather:
