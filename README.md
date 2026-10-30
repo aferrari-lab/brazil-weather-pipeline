@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/aferrari-lab/brazil-weather-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/aferrari-lab/brazil-weather-pipeline/actions/workflows/ci.yml)
 
-Pipeline de engenharia de dados de ponta a ponta com o clima diário de todos os municípios brasileiros desde 2025 ([Open-Meteo](https://open-meteo.com/) + IBGE), do data lake ao dashboard e à previsão de temperatura.
+Pipeline de engenharia de dados de ponta a ponta com o clima diário de todos os municípios brasileiros desde 2025 ([Open-Meteo](https://open-meteo.com/) + IBGE), do data lake ao dashboard e à classificação de eventos climáticos (ondas de calor e de frio, chuva extrema, estiagem).
 
 ```mermaid
 flowchart LR
@@ -14,12 +14,10 @@ flowchart LR
     SILVER --> DBT["dbt"]
     DBT --> GOLD[("Gold<br/>modelo estrela")]
     DBT --> OBS[("Observabilidade")]
-    DBT --> FEAT[("Features de ML")]
-    FEAT --> ML["Previsão<br/>scikit-learn"]
-    ML --> PREV[("Previsões")]
+    DBT --> EVT[("Eventos climáticos")]
     GOLD --> MB["Metabase"]
     OBS --> MB
-    PREV --> MB
+    EVT --> MB
 ```
 
 Tudo roda em containers Docker e é orquestrado pelo Airflow, uma vez por dia. O lake é o RustFS (compatível com S3) e o warehouse é o Postgres.
@@ -34,7 +32,7 @@ Tudo roda em containers Docker e é orquestrado pelo Airflow, uma vez por dia. O
 | 4. Modelagem com dbt | Modelo dimensional testado | ✅ |
 | 5. Orquestração com Airflow | Pipeline diário automático | ✅ |
 | 6. Qualidade e observabilidade | Painel de saúde do pipeline | ✅ |
-| 7. Consumo | Dashboards + previsão de temperatura | ✅ |
+| 7. Consumo | Dashboards + classificação de eventos climáticos | ✅ |
 | 8. CI/CD e documentação | Repositório com cara de produção | ✅ |
 
 ## Stack
@@ -48,7 +46,6 @@ Tudo roda em containers Docker e é orquestrado pelo Airflow, uma vez por dia. O
 | Transformação | dbt 1.10 (em container Docker) |
 | Orquestração | Apache Airflow 3 (LocalExecutor) |
 | BI | Metabase |
-| Machine learning | scikit-learn (gradient boosting) |
 | CI | GitHub Actions |
 | Qualidade de código | ruff, sqlfluff, pre-commit, pytest |
 
@@ -68,7 +65,7 @@ pre-commit install
 
 # 3. Construir as imagens (1ª vez) e subir tudo
 docker compose build
-docker compose build spark dbt ml
+docker compose build spark dbt
 docker compose up -d
 docker compose ps           # aguarde todos ficarem "healthy"
 ```
@@ -145,7 +142,7 @@ docker compose run --rm dbt source freshness  # a silver está sendo atualizada?
 | --- | --- | --- |
 | Staging | `staging` | `stg_clima_diario`, `stg_municipios`: nomes e tipos padronizados (views) |
 | Intermediate | `intermediate` | `int_clima_metricas`: médias e acumulados móveis de 7 dias (view) |
-| Gold | `gold` | Modelo estrela: `dim_municipio`, `dim_data`, `fct_clima_diario` (incremental) e `agg_clima_mensal` (resumo mensal com anomalia de temperatura) |
+| Gold | `gold` | Modelo estrela: `dim_municipio`, `dim_data`, `fct_clima_diario` (incremental) e `agg_clima_mensal` (resumo mensal com anomalia de temperatura), mais `fct_eventos_climaticos` e `agg_eventos_mensal` (eventos climáticos) |
 | Falhas de teste | `testes_falhas` | as linhas que reprovaram em cada teste, para investigar no banco |
 
 ### Documentação e linhagem
@@ -174,7 +171,7 @@ O Airflow junta tudo num pipeline diário. As DAGs ficam em `airflow/dags/`:
 
 ```bash
 docker compose build                # 1ª vez: imagem do Airflow com as bibliotecas da ingestão
-docker compose build spark dbt ml   # imagens dos jobs (de novo sempre que mudar um job ou modelo)
+docker compose build spark dbt      # imagens dos jobs (de novo sempre que mudar um job ou modelo)
 docker compose up -d
 ```
 
@@ -208,34 +205,26 @@ O que alimenta esses modelos:
 
 Como ler o painel: o quanto do Brasil já foi carregado e a situação de cada UF (no print, SP em carga e as demais na fila), as execuções da ingestão por status e os testes do dbt. A tabela **"Partições com dado faltando" vazia é o resultado esperado**: nenhum mês fechado perdeu linhas. Os dois erros do dia 28 foram respostas inválidas da API, antes de existir o tratamento para elas (`RespostaInvalidaError`).
 
-## Previsão de temperatura
+## Eventos climáticos
 
-O job `ml/previsao.py` prevê a temperatura média de cada município 1 dia à frente, com informação só até a véspera. Ele roda no fim da DAG diária (tarefa `previsao_temperatura`) ou com `docker compose run --rm ml`.
+Cada dia de cada município é classificado em eventos climáticos, no modelo `gold.fct_eventos_climaticos`, com um resumo mensal em `gold.agg_eventos_mensal`. Os critérios se inspiram nos índices de extremos climáticos do ETCCDI, o grupo de especialistas da Organização Meteorológica Mundial. Os percentis são calculados por município e por mês, porque 32 °C é um dia comum em Cuiabá em outubro e um dia extremo em Curitiba em julho.
 
-- **Features** (`ml.ml_features_temperatura`, modelo dbt): temperatura dos dias 1, 2, 3 e 7 anteriores, média dos 7 dias anteriores, máxima, mínima, chuva, umidade e vento da véspera, sazonalidade (seno e cosseno do dia do ano) e coordenadas.
-- **Modelo:** gradient boosting (`HistGradientBoostingRegressor`, do scikit-learn).
-- **Comparação:** o modelo só vale se bater dois palpites simples. Um é a **persistência** (o dia seguinte igual à véspera), que em temperatura é difícil de bater. O outro é a **média sazonal** do município naquele mês.
-- **Avaliação temporal:** treino até 60 dias antes do último dado e teste nesses 60 dias, que o modelo nunca viu. A métrica é o erro médio absoluto (MAE), em °C.
-
-| Tabela (schema `ml`) | Conteúdo |
-| --- | --- |
-| `avaliacao_modelos` | MAE e RMSE de cada palpite em cada treino, para acompanhar o modelo ao longo do tempo |
-| `previsoes_teste` | Previsto × real nos dias de teste do último treino |
-| `previsoes_publicadas` | A previsão do dia seguinte de cada execução, gravada uma vez e nunca reescrita |
-
-**Primeiro resultado** (treino em 29/10/2026, com os 353 municípios de SP já carregados; teste de 25/08 a 23/10/2026, 21.180 previsões):
-
-| Palpite | Erro médio (MAE) | RMSE |
+| Evento | Critério | Índice de referência |
 | --- | --- | --- |
-| Gradient boosting | **1,57 °C** | 1,94 °C |
-| Persistência (dia seguinte = véspera) | 1,73 °C | 2,14 °C |
-| Média sazonal do mês | 2,63 °C | 3,26 °C |
+| Dia quente | Máxima acima do percentil 90 do município naquele mês | TX90p |
+| Dia frio | Mínima abaixo do percentil 10 | TN10p |
+| Onda de calor | 3 ou mais dias quentes seguidos | WSDI (que usa 6 dias) |
+| Onda de frio | 3 ou mais dias frios seguidos | CSDI (que usa 6 dias) |
+| Chuva extrema | Chuva acima do percentil 95 dos dias chuvosos e de pelo menos 20 mm | R95p |
+| Estiagem | 30 ou mais dias seguidos sem chuva (menos de 1 mm), contados até o dia | CDD |
 
-O modelo erra cerca de 9% menos que a persistência e 40% menos que a média sazonal. É um ganho modesto, e era o esperado: o modelo só conhece o passado do próprio município. O próximo passo para melhorar seria acrescentar informação de fora, como os municípios vizinhos (uma frente fria chega antes neles) ou a previsão numérica do tempo, que a própria Open-Meteo oferece.
+Cada dia leva as flags de todos os critérios e um `evento_principal` (uma categoria só, por prioridade) para o painel. Os limites (percentis, dias mínimos, chuva mínima) são variáveis do `dbt_project.yml`, fáceis de ajustar. Um teste singular garante que toda onda tem pelo menos 3 dias e que todo dia de onda é de fato extremo.
 
-![Painel Clima do Brasil no Metabase: temperatura por região, meses mais quentes que o normal, erro de cada palpite e previsto × real](docs/img/metabase_clima.png)
+**Limitação conhecida:** com histórico desde 2025, cada mês tem só 1 ou 2 anos de base para o percentil. A coluna `limiar_confiavel` marca os meses com base suficiente; na climatologia, o período de referência costuma ter 30 anos.
 
-No painel "Clima do Brasil", por enquanto só aparece o Sudeste, porque SP é a UF já carregada. As outras regiões entram sozinhas conforme a carga diária avança. No gráfico de previsto × real, a persistência aparece como a curva real deslocada um dia para a direita (ela repete a véspera), e o modelo fica mais próximo da real na maior parte dos dias, mas suaviza os picos e vales mais bruscos.
+![Painel Clima do Brasil no Metabase: temperatura por região, eventos por mês, meses mais quentes que o normal e municípios com mais dias de onda de calor](docs/img/metabase_clima.png)
+
+No painel "Clima do Brasil", as regiões aparecem conforme a carga diária avança (no print, Sudeste, Norte e Nordeste). O gráfico de eventos mostra, mês a mês, quantos dias de cada evento houve somando todos os municípios carregados.
 
 ## Estrutura
 
@@ -249,9 +238,8 @@ No painel "Clima do Brasil", por enquanto só aparece o Sudeste, porque SP é a 
 ├── ingestion/         # extratores (Fase 2): lake.py (acesso ao lake), municipios.py (IBGE + coordenadas), clima.py (Open-Meteo)
 ├── spark/             # Dockerfile do Spark e jobs PySpark em spark/jobs/ (Fase 3)
 ├── dbt/               # projeto dbt: models/ (staging → marts, observabilidade), testes genéricos próprios
-├── ml/                # job de previsão de temperatura (Dockerfile + previsao.py)
 ├── ci/                # silver de amostra para o CI rodar o dbt sem lake nem API
-├── .github/workflows/ # CI: lint, testes, DAGs, dbt + previsão, imagens Docker
+├── .github/workflows/ # CI: lint, testes, DAGs, dbt + sqlfluff, imagens Docker
 ├── docker/postgres/init/  # cria banco do Airflow e schemas silver/gold/ops
 ├── notebooks/         # exploração
 ├── tests/
@@ -282,10 +270,10 @@ No painel "Clima do Brasil", por enquanto só aparece o Sudeste, porque SP é a 
 - **Filas (pools) no Airflow:** `api_open_meteo` com uma vaga (duas cargas dividiriam a mesma cota diária) e `transformacao` com uma vaga (Spark e dbt um de cada vez, sem disputar memória nem ler a silver no meio de uma regravação).
 - **Observabilidade com modelos dbt próprios, sem pacote externo:** o histórico dos testes vem de um hook `on-run-end` de poucas linhas, e a cobertura e o volume são modelos SQL comuns. Pacotes como o elementary fazem isso com mais recursos; aqui eu quis que cada peça fosse explicável.
 - **Alerta de volume por contagem exata:** como cada município iniciado recebe o histórico inteiro de uma vez, dá para saber exatamente quantas linhas cada UF deve ter em cada mês. Isso é mais preciso que comparar com a média dos meses anteriores, e não dispara falso alarme enquanto o Brasil ainda está sendo carregado, porque só cobra os municípios já iniciados e os meses fechados.
-- **Previsão avaliada contra palpites simples:** um MAE sozinho não diz nada. A pergunta certa é se o modelo erra menos que "amanhã igual a hoje". Por isso a tabela de avaliação sempre traz a persistência e a média sazonal ao lado do modelo, e o job avisa no log quando o modelo não bate a persistência.
-- **Sem vazamento de dados:** toda feature usa só dias anteriores ao previsto, a separação treino/teste é por data (sem embaralhar) e a média sazonal é calculada só com o treino.
-- **Previsão publicada é imutável:** a previsão do próximo dia é gravada uma vez (`ON CONFLICT DO NOTHING`), antes de o dado real existir. Comparar com o real depois é uma avaliação honesta, que um modelo retreinado não consegue maquiar.
-- **CI com banco de verdade:** o GitHub Actions sobe um Postgres, grava uma silver sintética (seis capitais, mesmo schema da real) e roda o `dbt build`, o sqlfluff e o job de previsão. Os testes do Spark, que no Windows são pulados por falta de Java, rodam no CI com o Java instalado, e as DAGs são carregadas num Airflow 3.1 de verdade. Um job à parte constrói as quatro imagens Docker.
+- **Eventos por regra, não por modelo:** a primeira versão tinha um modelo de previsão de temperatura para o dia seguinte. Como a API publica o dado com 5 dias de atraso, "o dia seguinte" já tinha passado, e a previsão não tinha uso prático. A classificação de eventos responde perguntas reais ("onde houve onda de calor este mês?") com regras transparentes e testáveis, sem treinar nada. Para prever de verdade seria preciso partir da previsão numérica do tempo.
+- **Percentis do próprio lugar e época:** um limiar fixo (por exemplo, 35 °C) marcaria o Norte o ano todo e nunca o Sul. Percentis por município e mês comparam cada dia com o normal daquele lugar, como fazem os índices do ETCCDI.
+- **Ondas com 3 dias, e não 6:** o WSDI usa 6 dias seguidos acima do percentil 90. Com histórico curto e clima tropical isso quase não acontece, e o painel ficaria vazio. Com 3 dias o critério pega os episódios que importam; o número é uma variável do dbt.
+- **CI com banco de verdade:** o GitHub Actions sobe um Postgres, grava uma silver sintética (seis capitais, mesmo schema da real) e roda o `dbt build` e o sqlfluff. Os testes do Spark, que no Windows são pulados por falta de Java, rodam no CI com o Java instalado, e as DAGs são carregadas num Airflow 3.1 de verdade. Um job à parte constrói as três imagens Docker.
 - **Sem login no Airflow** (`SIMPLE_AUTH_MANAGER_ALL_ADMINS`): apenas para desenvolvimento local.
 
 ## Fontes e licenças

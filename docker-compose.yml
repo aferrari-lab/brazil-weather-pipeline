@@ -161,19 +161,6 @@ services:
       postgres:
         condition: service_healthy
 
-  # Previsão de temperatura sob demanda, como o Spark e o dbt:
-  #   docker compose run --rm ml
-  ml:
-    build: ./ml
-    image: brazil-weather-ml:1.0
-    profiles: ["ml"]
-    env_file: .env
-    environment:
-      WAREHOUSE_HOST: postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
-
   # BI: painéis de saúde do pipeline (Fase 6) e de clima (Fase 7), lendo o Postgres.
   # Os metadados do próprio Metabase (perguntas, painéis, usuários) ficam num
   # arquivo H2 no volume metabase_data; em produção ficariam num Postgres.

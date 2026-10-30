@@ -5,8 +5,8 @@ de cada um (as mesmas do "docker compose run"), espera o job terminar e traz o l
 O pedido passa pelo docker-proxy, que só libera o que é preciso para criar e
 acompanhar containers (ver docker-compose.yml).
 
-O código dos jobs vai dentro das imagens. Depois de mudar um job, um modelo do dbt
-ou a previsão, reconstrua as imagens: docker compose build spark dbt ml
+O código dos jobs vai dentro das imagens. Depois de mudar um job ou um modelo do
+dbt, reconstrua as imagens: docker compose build spark dbt
 """
 
 import os
@@ -14,7 +14,6 @@ from collections.abc import Mapping
 
 IMAGEM_SPARK = os.getenv("PIPELINE_IMAGEM_SPARK", "brazil-weather-spark:3.5.6")
 IMAGEM_DBT = os.getenv("PIPELINE_IMAGEM_DBT", "brazil-weather-dbt:1.10")
-IMAGEM_ML = os.getenv("PIPELINE_IMAGEM_ML", "brazil-weather-ml:1.0")
 DOCKER_URL = os.getenv("PIPELINE_DOCKER_URL", "tcp://docker-proxy:2375")
 # Os containers dos jobs entram na rede do compose para enxergar o lake e o Postgres.
 REDE_DOCKER = os.getenv("PIPELINE_REDE_DOCKER", "brazil-weather")
@@ -87,18 +86,6 @@ def tarefa_dbt(task_id: str, *argumentos: str, **opcoes):
     return DockerOperator(
         task_id=task_id,
         image=IMAGEM_DBT,
-        command=list(argumentos),
-        **{**_opcoes_comuns(), **opcoes},
-    )
-
-
-def tarefa_ml(task_id: str, *argumentos: str, **opcoes):
-    """Tarefa que roda o job de previsão (ml/previsao.py) na imagem ml."""
-    from airflow.providers.docker.operators.docker import DockerOperator
-
-    return DockerOperator(
-        task_id=task_id,
-        image=IMAGEM_ML,
         command=list(argumentos),
         **{**_opcoes_comuns(), **opcoes},
     )

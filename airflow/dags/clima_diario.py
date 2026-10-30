@@ -7,9 +7,8 @@ Roda todo dia às 6h (horário de Brasília):
    (semanas de cota) acontece sozinha, uma fatia por dia;
 2. silver_clima: o Spark limpa e deduplica só as partições que receberam dado novo;
 3. silver_postgres: leva essas partições para o Postgres;
-4. dbt_build: atualiza a gold, a observabilidade e as features de ML e roda os testes;
-5. previsao_temperatura: retreina o modelo, avalia contra os palpites simples e
-   publica a previsão do dia seguinte ao último dado de cada município.
+4. dbt_build: atualiza a gold (incluindo a classificação de eventos climáticos) e a
+   observabilidade, e roda os testes.
 
 Em paralelo, publicar_log_cargas copia o log das cargas do lake para o Postgres
 (ops.log_cargas), para o painel de saúde. Ela roda mesmo se a ingestão falhar.
@@ -26,7 +25,7 @@ import pendulum
 from airflow.sdk import dag, task
 
 from orquestracao.alertas import avisar_falha
-from orquestracao.containers import tarefa_dbt, tarefa_ml, tarefa_spark
+from orquestracao.containers import tarefa_dbt, tarefa_spark
 from orquestracao.observabilidade import tarefa_publicar_log_cargas
 
 # Uma carga por vez na API: duas ao mesmo tempo dividiriam a mesma cota diária.
@@ -79,7 +78,7 @@ def clima_diario():
 
     ingestao >> silver >> postgres
     ingestao >> log
-    [postgres, log] >> dbt >> tarefa_ml("previsao_temperatura")
+    [postgres, log] >> dbt
 
 
 clima_diario()

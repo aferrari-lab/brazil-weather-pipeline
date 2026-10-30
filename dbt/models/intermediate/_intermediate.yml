@@ -17,3 +17,16 @@ models:
               arguments: {minimo: 0, maximo: 7}
       - name: dia_de_chuva
         description: Verdadeiro quando choveu pelo menos o limite da variável limite_dia_chuva_mm (1 mm).
+
+  - name: int_limiares_clima
+    description: >
+      Limiares de extremo por município e mês do calendário (percentis da máxima,
+      da mínima e da chuva dos dias chuvosos), sobre todo o histórico. Base dos
+      eventos climáticos.
+    tests:
+      - combinacao_unica:
+          arguments:
+            colunas: [codigo_ibge, mes]
+    columns:
+      - name: limiar_confiavel
+        description: O mês tem dias suficientes de base (var dias_minimos_base_limiar).

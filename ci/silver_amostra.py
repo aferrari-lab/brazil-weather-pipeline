@@ -1,4 +1,4 @@
-"""Cria uma silver de amostra no Postgres, para o CI rodar o dbt e a previsão.
+"""Cria uma silver de amostra no Postgres, para o CI rodar o dbt.
 
 No GitHub Actions não há lake nem API: o CI sobe um Postgres vazio, e este script
 grava nele as duas tabelas que o Spark grava de verdade (silver.clima_diario e

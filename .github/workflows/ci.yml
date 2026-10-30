@@ -3,8 +3,8 @@
 # - lint:    ruff (Python) — mesma versão do pre-commit;
 # - testes:  pytest com Java, para os testes do Spark rodarem (no Windows eles são pulados);
 # - dags:    as DAGs carregam no Airflow 3.1 de verdade, com as constraints oficiais;
-# - dbt:     Postgres de serviço + silver de amostra → dbt build, sqlfluff e o job de previsão;
-# - imagens: as quatro imagens Docker do projeto constroem sem erro.
+# - dbt:     Postgres de serviço + silver de amostra → dbt build e sqlfluff;
+# - imagens: as três imagens Docker do projeto constroem sem erro.
 name: CI
 
 on:
@@ -95,7 +95,7 @@ jobs:
           cache: pip
       - run: >
           pip install "dbt-core==1.10.15" "dbt-postgres==1.10.2"
-          "sqlfluff==3.4.2" "sqlfluff-templater-dbt==3.4.2" -r ml/requirements.txt
+          "sqlfluff==3.4.2" "sqlfluff-templater-dbt==3.4.2" "psycopg[binary]==3.2.3"
       - name: Silver de amostra
         run: python ci/silver_amostra.py
       - name: dbt build (modelos + testes de dados)
@@ -104,15 +104,13 @@ jobs:
       - name: sqlfluff (lint do SQL)
         working-directory: dbt
         run: sqlfluff lint models tests
-      - name: Previsão de temperatura
-        run: python ml/previsao.py
 
   imagens:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        imagem: [airflow, spark, dbt, ml]
+        imagem: [airflow, spark, dbt]
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t brazil-weather-${{ matrix.imagem }}:ci ./${{ matrix.imagem }}

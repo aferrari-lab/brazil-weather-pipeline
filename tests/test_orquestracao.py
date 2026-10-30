@@ -158,13 +158,6 @@ def test_ordem_das_tarefas(dagbag, dag_id, primeira):
         assert seguinte in dag.get_task(anterior).downstream_task_ids
 
 
-def test_previsao_roda_depois_do_dbt(dagbag):
-    dag = dagbag.dags["clima_diario"]
-
-    assert "previsao_temperatura" in dag.get_task("dbt_build").downstream_task_ids
-    assert dag.get_task("previsao_temperatura").pool == "transformacao"
-
-
 def test_dag_diaria_nao_faz_catchup_e_roda_uma_por_vez(dagbag):
     dag = dagbag.dags["clima_diario"]
 

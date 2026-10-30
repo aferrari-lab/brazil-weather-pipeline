@@ -33,10 +33,6 @@ models:
     observabilidade:
       +schema: observabilidade
       +materialized: table
-    # Machine learning: as features que o job de previsão (ml/previsao.py) lê.
-    ml:
-      +schema: ml
-      +materialized: table
 
 vars:
   # Início do histórico do projeto (o mesmo da ingestão do Open-Meteo).
@@ -44,6 +40,15 @@ vars:
   # Chuva a partir da qual o dia conta como "dia de chuva" (critério usual em
   # climatologia).
   limite_dia_chuva_mm: 1.0
+  # Eventos climáticos (ver models/marts/fct_eventos_climaticos.sql).
+  percentil_dia_quente: 0.9
+  percentil_dia_frio: 0.1
+  percentil_chuva_extrema: 0.95
+  chuva_minima_extrema_mm: 20
+  dias_minimos_onda: 3
+  dias_minimos_estiagem: 30
+  # Abaixo disso o limiar do mês ainda tem pouca base (cerca de 2 anos de um mês).
+  dias_minimos_base_limiar: 50
 
 # Histórico de cada execução do dbt (ver macros/resultados_dbt.sql).
 on-run-start:

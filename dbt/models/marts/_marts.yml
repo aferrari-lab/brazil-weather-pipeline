@@ -100,3 +100,48 @@ models:
           município, em °C. Positivo = mais quente que o normal.
       - name: anos_na_media_historica
         description: Quantos anos entraram na média histórica do mês (limitação do histórico curto).
+
+  - name: fct_eventos_climaticos
+    description: >
+      Cada dia de cada município classificado em eventos climáticos: dia quente,
+      dia frio, onda de calor, onda de frio, chuva extrema e estiagem, com percentis
+      do próprio município no mesmo mês (inspirado nos índices do ETCCDI). O
+      evento_principal resume o dia numa categoria só.
+    tests:
+      - combinacao_unica:
+          arguments:
+            colunas: [codigo_ibge, data]
+    columns:
+      - name: codigo_ibge
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_municipio')
+                field: codigo_ibge
+      - name: evento_principal
+        description: Categoria do dia, pela prioridade onda de calor > onda de frio > chuva extrema > estiagem > dia quente > dia frio > normal.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [onda de calor, onda de frio, chuva extrema, estiagem, dia quente, dia frio, normal]
+      - name: dias_secos_seguidos
+        description: Dias sem chuva seguidos até este dia (inclusive).
+        tests:
+          - entre:
+              arguments: {minimo: 0}
+      - name: limiar_confiavel
+        description: O limiar do mês tem base suficiente. Com histórico curto, trate eventos com limiar não confiável com cautela.
+
+  - name: agg_eventos_mensal
+    description: Dias e episódios de cada evento climático por município e mês.
+    tests:
+      - combinacao_unica:
+          arguments:
+            colunas: [codigo_ibge, ano, mes]
+    columns:
+      - name: ondas_de_calor
+        description: Episódios distintos de onda de calor que começaram no mês.
+      - name: maior_sequencia_seca
+        description: Maior número de dias seguidos sem chuva alcançado no mês.
