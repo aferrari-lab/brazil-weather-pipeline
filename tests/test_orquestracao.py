@@ -4,7 +4,7 @@ Os testes das DAGs precisam do Airflow instalado e são pulados sem ele (no Wind
 o Airflow roda só no Docker); o resto roda em qualquer lugar.
 """
 
-from datetime import date
+from datetime import UTC, date, datetime
 from types import SimpleNamespace
 
 import pandas as pd
@@ -19,12 +19,13 @@ CONFIG = ConfigLake(raiz="memory://lake", storage_options={})
 
 
 # --- Carga do Brasil até o limite da API ---
-def test_ordenar_ufs_poe_prioritarias_na_frente_e_resto_em_ordem():
-    assert clima.ordenar_ufs(["rj", "SP", "AC", "MG", "RJ"]) == ["SP", "AC", "MG", "RJ"]
+def test_ordenar_ufs_da_menor_para_a_maior():
+    # Uma entrada por município: MG 3, SP 2, RJ 1 (minúscula conta igual).
+    assert clima.ordenar_ufs(["MG", "sp", "MG", "RJ", "SP", "mg"]) == ["RJ", "SP", "MG"]
 
 
-def test_ordenar_ufs_ignora_prioritaria_ausente():
-    assert clima.ordenar_ufs(["RJ", "AC"], prioridade=("SP",)) == ["AC", "RJ"]
+def test_ordenar_ufs_empate_em_ordem_alfabetica():
+    assert clima.ordenar_ufs(["RR", "AP", "DF"]) == ["AP", "DF", "RR"]
 
 
 @pytest.fixture
@@ -33,7 +34,12 @@ def municipios_falsos(monkeypatch):
     monkeypatch.setattr(clima, "ler_parquet", lambda *args, **kwargs: tabela)
 
 
-def test_carga_brasil_completa_devolve_sucesso(monkeypatch, municipios_falsos):
+@pytest.fixture
+def sem_corte(monkeypatch):
+    monkeypatch.setattr(clima, "data_de_corte", lambda config: None)
+
+
+def test_carga_brasil_completa_devolve_sucesso(monkeypatch, municipios_falsos, sem_corte):
     chamadas = []
     monkeypatch.setattr(
         clima,
@@ -44,10 +50,69 @@ def test_carga_brasil_completa_devolve_sucesso(monkeypatch, municipios_falsos):
     status = clima.carregar_clima_brasil(date(2026, 10, 20), config=CONFIG)
 
     assert status == "sucesso"
-    assert chamadas == [(["SP", "AC", "RJ"], clima.DATA_INICIO, date(2026, 10, 20), False)]
+    assert chamadas == [(["AC", "RJ", "SP"], clima.DATA_INICIO, date(2026, 10, 20), False)]
 
 
-def test_carga_brasil_no_limite_da_api_nao_falha(monkeypatch, municipios_falsos):
+def test_carga_brasil_fecha_o_historico_antes_de_avancar(monkeypatch, municipios_falsos):
+    # SP inteira tem até 23/10; a carga pede primeiro todas as UFs até 23/10 e só
+    # depois os dias novos até 26/10.
+    monkeypatch.setattr(clima, "data_de_corte", lambda config: date(2026, 10, 23))
+    chamadas = []
+    monkeypatch.setattr(
+        clima, "carregar_clima", lambda ufs, inicio, fim, **kw: chamadas.append(fim)
+    )
+
+    assert clima.carregar_clima_brasil(date(2026, 10, 26), config=CONFIG) == "sucesso"
+    assert chamadas == [date(2026, 10, 23), date(2026, 10, 26)]
+
+
+def test_cota_acabando_no_historico_nao_busca_dias_novos(monkeypatch, municipios_falsos):
+    monkeypatch.setattr(clima, "data_de_corte", lambda config: date(2026, 10, 23))
+    chamadas = []
+
+    def carga(ufs, inicio, fim, **kw):
+        chamadas.append(fim)
+        raise requests.exceptions.RetryError("too many 429 error responses")
+
+    monkeypatch.setattr(clima, "carregar_clima", carga)
+
+    assert clima.carregar_clima_brasil(date(2026, 10, 26), config=CONFIG) == "limite_api"
+    assert chamadas == [date(2026, 10, 23)]  # parou no histórico, sem avançar
+
+
+def test_corte_igual_ao_fim_faz_uma_fase_so(monkeypatch, municipios_falsos):
+    monkeypatch.setattr(clima, "data_de_corte", lambda config: date(2026, 10, 26))
+    chamadas = []
+    monkeypatch.setattr(
+        clima, "carregar_clima", lambda ufs, inicio, fim, **kw: chamadas.append(fim)
+    )
+
+    clima.carregar_clima_brasil(date(2026, 10, 26), config=CONFIG)
+
+    assert chamadas == [date(2026, 10, 26)]
+
+
+def test_data_de_corte_e_o_menor_ultimo_dia_de_sp(monkeypatch):
+    ultimas = pd.DataFrame(
+        {
+            "codigo_ibge": [1, 2, 3],
+            "ultima_data": pd.to_datetime(["2026-10-26", "2026-10-23", "2026-10-25"]),
+        }
+    )
+    monkeypatch.setattr(clima, "ultimas_datas_carregadas", lambda config, uf: ultimas)
+
+    assert clima.data_de_corte(CONFIG) == date(2026, 10, 23)
+
+
+def test_sem_dado_de_sp_nao_ha_corte(monkeypatch):
+    monkeypatch.setattr(
+        clima, "ultimas_datas_carregadas", lambda config, uf: clima._ultimas_datas_vazio()
+    )
+
+    assert clima.data_de_corte(CONFIG) is None
+
+
+def test_carga_brasil_no_limite_da_api_nao_falha(monkeypatch, municipios_falsos, sem_corte):
     def estoura_limite(*args, **kwargs):
         raise requests.exceptions.RetryError("too many 429 error responses")
 
@@ -56,7 +121,7 @@ def test_carga_brasil_no_limite_da_api_nao_falha(monkeypatch, municipios_falsos)
     assert clima.carregar_clima_brasil(date(2026, 10, 20), config=CONFIG) == "limite_api"
 
 
-def test_carga_brasil_deixa_passar_erro_de_verdade(monkeypatch, municipios_falsos):
+def test_carga_brasil_deixa_passar_erro_de_verdade(monkeypatch, municipios_falsos, sem_corte):
     def quebra(*args, **kwargs):
         raise clima.RespostaInvalidaError("resposta sem JSON")
 
@@ -239,3 +304,27 @@ def test_log_publicado_antes_do_dbt_e_mesmo_se_a_ingestao_falhar(dagbag):
 
         assert tarefa.trigger_rule == "all_done"
         assert "dbt_build" in tarefa.downstream_task_ids
+
+
+# --- Data de referência da execução ---
+def test_execucao_agendada_usa_a_data_logica():
+    from orquestracao.datas import data_de_referencia
+
+    disparo = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+
+    assert data_de_referencia("2026-10-30", disparo) == date(2026, 10, 30)
+
+
+def test_execucao_manual_sem_data_logica_usa_o_disparo():
+    # No Airflow 3, o Trigger manual não tem data lógica: o ds chega None.
+    from orquestracao.datas import data_de_referencia
+
+    disparo = datetime(2026, 10, 31, 7, 15, tzinfo=UTC)
+
+    assert data_de_referencia(None, disparo) == date(2026, 10, 31)
+
+
+def test_sem_data_nenhuma_usa_hoje():
+    from orquestracao.datas import data_de_referencia
+
+    assert data_de_referencia(None) == datetime.now(UTC).date()

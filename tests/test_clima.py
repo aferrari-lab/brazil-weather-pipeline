@@ -361,3 +361,36 @@ def test_erro_informado_pela_api_vira_excecao_clara():
 
     with pytest.raises(clima.RespostaInvalidaError, match="Daily API request limit"):
         clima.extrair_clima(MUNICIPIOS.head(1), INICIO, FIM, SessaoComErro())
+
+
+# --- Lotes da carga diária (poucos dias, muitos municípios) ---
+def test_carga_de_um_dia_respeita_o_maximo_de_municipios_por_chamada():
+    # Com 1 dia, o peso por município é o mínimo e caberiam 500 numa chamada, mas
+    # a URL com 500 coordenadas passa do limite da API (erro 414).
+    dia = date(2026, 10, 26)
+
+    assert clima.tamanho_do_lote(dia, dia) == clima.MAX_MUNICIPIOS_POR_CHAMADA
+
+
+def test_url_do_lote_maximo_cabe_no_limite():
+    lote = pd.DataFrame(
+        {
+            "latitude": [-23.5503] * clima.MAX_MUNICIPIOS_POR_CHAMADA,
+            "longitude": [-46.6333] * clima.MAX_MUNICIPIOS_POR_CHAMADA,
+        }
+    )
+    coordenadas = ",".join(f"{v:.4f}" for v in lote["latitude"]) + ",".join(
+        f"{v:.4f}" for v in lote["longitude"]
+    )
+    # Vírgulas viram %2C na URL (3 caracteres): conto o pior caso.
+    assert len(coordenadas.replace(",", "%2C")) + 400 < 4000
+
+
+def test_pausa_proporcional_ao_peso_do_lote():
+    dia = date(2026, 10, 26)
+    historico = (date(2025, 1, 1), date(2026, 10, 23))
+
+    assert clima.pausa_do_lote(100, dia, dia, 60) == pytest.approx(12)  # peso 100 de 500
+    lote_cheio = clima.tamanho_do_lote(*historico)
+    assert clima.pausa_do_lote(lote_cheio, *historico, 60) <= 60
+    assert clima.pausa_do_lote(5000, dia, dia, 60) == 60  # nunca passa da pausa cheia

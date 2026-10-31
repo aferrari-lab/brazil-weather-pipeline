@@ -17,6 +17,7 @@ import logging
 import math
 import time
 import uuid
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -69,15 +70,17 @@ ATRASO_DIAS = 5
 # chamada "pesa" locais × (dias / 14) × (variáveis / 10). Eu monto lotes que
 # pesam no máximo 500 por minuto, deixando folga em relação aos 600.
 PESO_MAXIMO_POR_MINUTO = 500
+# Pausa depois de um lote de peso cheio (500). Lotes mais leves esperam menos, na
+# mesma proporção: o ritmo fica sempre em até 500 de peso por minuto.
 PAUSA_ENTRE_LOTES_SEGUNDOS = 60
+# As coordenadas vão na URL da chamada. Com 500 municípios (o lote de uma carga de
+# poucos dias) a URL passa de 9 mil caracteres e a API recusa (erro 414). Com 100,
+# fica perto de 2 mil, dentro do limite usual de servidores web.
+MAX_MUNICIPIOS_POR_CHAMADA = 100
 
 # Lake: uma pasta por ano, mês e UF. O bronze é "append-only": cada lote grava
 # arquivos novos e nada é reescrito. Se um dia aparecer mais de uma vez (um lote
 # refeito), a silver fica com a versão gravada por último.
-# Na carga do Brasil inteiro, estas UFs vêm primeiro (SP foi a primeira a ser
-# carregada); as demais seguem em ordem alfabética.
-UFS_PRIORITARIAS = ("SP",)
-
 CAMINHO_CLIMA = "bronze/clima_diario"
 PARTICOES = ["ano", "mes", "uf_sigla"]
 
@@ -120,10 +123,23 @@ def peso_por_local(inicio: date, fim: date, n_variaveis: int = len(VARIAVEIS_DIA
 
 
 def tamanho_do_lote(inicio: date, fim: date) -> int:
-    """Quantos municípios cabem em uma chamada sem passar do peso por minuto."""
+    """Quantos municípios cabem em uma chamada sem passar do peso por minuto
+    nem do tamanho de URL que a API aceita."""
     # Pelo menos 1, mesmo que um único município já passe do limite (períodos
     # muito longos): nesse caso a pausa entre lotes é o que segura o ritmo.
-    return max(1, math.floor(PESO_MAXIMO_POR_MINUTO / peso_por_local(inicio, fim)))
+    pelo_peso = math.floor(PESO_MAXIMO_POR_MINUTO / peso_por_local(inicio, fim))
+    return max(1, min(MAX_MUNICIPIOS_POR_CHAMADA, pelo_peso))
+
+
+def pausa_do_lote(n_municipios: int, inicio: date, fim: date, pausa_cheia: float) -> float:
+    """Segundos de espera depois de um lote, proporcionais ao peso dele.
+
+    Um lote de peso 500 espera a pausa cheia (60 s); um de peso 100 espera um
+    quinto disso. Assim a carga diária (lotes leves) não fica esperando à toa,
+    e o ritmo nunca passa de 500 de peso por minuto.
+    """
+    peso_lote = n_municipios * peso_por_local(inicio, fim)
+    return pausa_cheia * min(1.0, peso_lote / PESO_MAXIMO_POR_MINUTO)
 
 
 class RespostaInvalidaError(ValueError):
@@ -384,7 +400,8 @@ def carregar_clima_uf(
     # Municípios com o mesmo dia de início podem ir juntos na mesma chamada. Em
     # geral é um grupo só; mais de um aparece quando uma carga anterior parou no meio.
     total = 0
-    primeira_chamada = True
+    # Espera devida pelo lote anterior: o peso que ele gastou da cota do minuto.
+    pausa_pendente = 0.0
     for inicio_grupo, grupo in pendentes.groupby("inicio_pendente", sort=True):
         tamanho = tamanho_do_lote(inicio_grupo, fim)
         n_lotes = math.ceil(len(grupo) / tamanho)
@@ -398,15 +415,16 @@ def carregar_clima_uf(
         )
 
         for numero, posicao in enumerate(range(0, len(grupo), tamanho), start=1):
-            # Respeito o limite por minuto da API com uma pausa entre as chamadas.
-            if not primeira_chamada and pausa_segundos > 0:
-                logger.info("Pausa de %.0f s para respeitar o limite da API.", pausa_segundos)
-                time.sleep(pausa_segundos)
-            primeira_chamada = False
-
             lote = grupo.iloc[posicao : posicao + tamanho]
+            # Respeito o limite por minuto da API com uma pausa entre as chamadas,
+            # proporcional ao peso do lote anterior.
+            if pausa_pendente > 0:
+                logger.info("Pausa de %.0f s para respeitar o limite da API.", pausa_pendente)
+                time.sleep(pausa_pendente)
+
             extraido_em = datetime.now(UTC)
             respostas = extrair_clima(lote, inicio_grupo, fim, sessao)
+            pausa_pendente = pausa_do_lote(len(lote), inicio_grupo, fim, pausa_segundos)
             # Conto a chamada logo depois de feita, para o log registrar até as
             # chamadas de um lote que falhar mais adiante.
             if execucao:
@@ -502,16 +520,36 @@ def carregar_clima(
             logger.info("%s concluída: %d linha(s) nova(s) em %s.", uf, linhas, CAMINHO_CLIMA)
 
 
-def ordenar_ufs(ufs: list[str], prioridade: tuple[str, ...] = UFS_PRIORITARIAS) -> list[str]:
-    """Põe as UFs prioritárias na frente e o resto em ordem alfabética.
+def ordenar_ufs(uf_de_cada_municipio: list[str]) -> list[str]:
+    """Ordena as UFs da que tem menos municípios para a que tem mais.
 
-    A ordem fixa importa: como cada execução para no limite diário da API, as UFs
-    já começadas ficam sempre na frente e recebem os dias novos primeiro (que custam
-    pouco). Só depois a cota que sobra vai para a próxima UF ainda não carregada.
+    Recebe a UF de cada município (com repetição) e conta quantos cada uma tem.
+    UFs pequenas primeiro fecham mais estados por execução: o painel passa a
+    mostrar UFs completas mais cedo, em vez de uma UF grande pela metade. Em caso
+    de empate, a ordem alfabética decide.
+
+    A ordem fixa também importa porque cada execução para no limite diário da
+    API: uma UF começada termina antes de a próxima começar.
     """
-    ufs = sorted({uf.upper() for uf in ufs})
-    primeiras = [uf for uf in prioridade if uf in ufs]
-    return primeiras + [uf for uf in ufs if uf not in primeiras]
+    contagem = Counter(uf.upper() for uf in uf_de_cada_municipio)
+    return sorted(contagem, key=lambda uf: (contagem[uf], uf))
+
+
+# UF de referência do histórico: as demais são carregadas até o último dia que ela
+# tem completo antes de qualquer UF receber dias novos.
+UF_REFERENCIA = "SP"
+
+
+def data_de_corte(config: ConfigLake, uf: str = UF_REFERENCIA) -> date | None:
+    """Último dia que todos os municípios já carregados da UF de referência têm.
+
+    É o mínimo das últimas datas dos municípios da UF. Sem dado nenhum da UF,
+    devolve None (não há corte e a carga segue direto até o fim).
+    """
+    ultimas = ultimas_datas_carregadas(config, uf)
+    if ultimas.empty:
+        return None
+    return pd.Timestamp(ultimas["ultima_data"].min()).date()
 
 
 def carregar_clima_brasil(
@@ -521,17 +559,32 @@ def carregar_clima_brasil(
 ) -> str:
     """Carrega o clima que falta para o Brasil inteiro, até onde a cota diária da API deixar.
 
-    É a carga que o Airflow roda todo dia. Chegar ao limite da API não é erro aqui:
-    o que foi gravado fica no bronze e a próxima execução continua de onde parou.
-    Devolve o status da carga ("sucesso" ou "limite_api").
+    É a carga que o Airflow roda todo dia, em duas fases:
+    1. fechar o histórico: todas as UFs até o último dia que a UF de referência
+       (SP) tem completo, sem buscar dia novo para ninguém. Assim a cota vai
+       primeiro para quem está atrasado, e não para os dias novos de SP;
+    2. avançar: só se a fase 1 terminar inteira (todas as UFs alcançaram o corte),
+       busca os dias novos, até `fim`, para todo o Brasil.
+
+    Chegar ao limite da API não é erro aqui: o que foi gravado fica no bronze e a
+    próxima execução continua de onde parou. Devolve "sucesso" ou "limite_api".
     """
     config = config or carregar_config()
     municipios = ler_parquet(CAMINHO_MUNICIPIOS, config, colunas=["uf_sigla"])
-    ufs = ordenar_ufs(municipios["uf_sigla"].astype(str).unique().tolist())
-    logger.info("Carga do Brasil até %s, nesta ordem: %s", fim, ", ".join(ufs))
+    ufs = ordenar_ufs(municipios["uf_sigla"].astype(str).tolist())
+
+    corte = data_de_corte(config)
+    fases = []
+    if corte is not None and corte < fim:
+        fases.append(("fechar o histórico", corte))
+    fases.append(("avançar", fim))
 
     try:
-        carregar_clima(ufs, DATA_INICIO, fim, config=config, sessao=sessao, limite_e_erro=False)
+        for nome, ate in fases:
+            logger.info(
+                "Fase '%s': todas as UFs até %s, nesta ordem: %s", nome, ate, ", ".join(ufs)
+            )
+            carregar_clima(ufs, DATA_INICIO, ate, config=config, sessao=sessao, limite_e_erro=False)
     except requests.exceptions.RetryError:
         logger.warning("Cota diária da API esgotada. O restante fica para a próxima execução.")
         return STATUS_LIMITE_API

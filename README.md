@@ -177,7 +177,7 @@ docker compose up -d
 
 Depois, em http://localhost:8081 (a `AIRFLOW_PORT` do `.env`), ative a DAG `clima_diario`. Para reprocessar um período, use o botão **Trigger** na `clima_reprocessar` ou `make airflow-reprocessar UF=SP INICIO=2025-03-01 FIM=2025-03-31`.
 
-Como a ingestão para no limite diário da API sem falhar, a carga histórica do Brasil inteiro acontece sozinha, uma fatia por dia, e as UFs já carregadas recebem os dias novos primeiro.
+Como a ingestão para no limite diário da API sem falhar, a carga histórica do Brasil inteiro acontece sozinha, uma fatia por dia. A carga tem duas fases: primeiro todas as UFs são completadas até o último dia que SP inteira já tem, e só depois, se sobrar cota, o Brasil todo avança para os dias novos. Assim a cota vai para quem está atrasado, e não para os dias novos de quem já está em dia.
 
 ![Grafo da DAG clima_diario: ingestão, silver, Postgres e dbt, todas com sucesso](docs/img/airflow_dag.png)
 

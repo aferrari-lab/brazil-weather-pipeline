@@ -19,13 +19,14 @@ execução de hoje já recupera qualquer dia perdido. Rodar as execuções antig
 uma a uma só gastaria cota da API.
 """
 
-from datetime import date, timedelta
+from datetime import timedelta
 
 import pendulum
 from airflow.sdk import dag, task
 
 from orquestracao.alertas import avisar_falha
 from orquestracao.containers import tarefa_dbt, tarefa_spark
+from orquestracao.datas import data_de_referencia
 from orquestracao.observabilidade import tarefa_publicar_log_cargas
 
 # Uma carga por vez na API: duas ao mesmo tempo dividiriam a mesma cota diária.
@@ -59,14 +60,16 @@ def clima_diario():
         retries=1,
         retry_delay=timedelta(minutes=30),
     )
-    def ingerir_clima(ds: str | None = None) -> str:
+    def ingerir_clima(ds: str | None = None, dag_run=None) -> str:
         # Importo aqui dentro, e não no topo: o Airflow lê este arquivo a cada
         # poucos segundos, e o pandas só precisa ser carregado quando a tarefa roda.
         from ingestion.clima import carregar_clima_brasil, periodo_padrao
 
         # A data final vem da data lógica da execução ({{ ds }}), e não do relógio:
         # a mesma execução, refeita depois, pede exatamente o mesmo período.
-        _, fim = periodo_padrao(hoje=date.fromisoformat(ds))
+        # Execução disparada à mão não tem data lógica: vale a hora do disparo.
+        disparada_em = getattr(dag_run, "run_after", None)
+        _, fim = periodo_padrao(hoje=data_de_referencia(ds, disparada_em))
         return carregar_clima_brasil(fim)
 
     silver = tarefa_spark("silver_clima", "silver_clima.py")
