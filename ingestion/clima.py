@@ -146,6 +146,19 @@ class RespostaInvalidaError(ValueError):
     """A API respondeu com sucesso (HTTP 2xx), mas o conteúdo não são os dados esperados."""
 
 
+class RespostaIlegivelError(RespostaInvalidaError):
+    """O corpo da resposta não pôde ser lido como JSON (cortado, corrompido ou não-JSON).
+
+    Em geral é falha passageira na transferência (já aconteceu de um JSON válido
+    chegar quebrado no meio), então vale repetir a chamada antes de desistir.
+    """
+
+
+# Esperas antes de repetir uma chamada cuja resposta veio ilegível: 3 tentativas
+# no total. O retry do requests não cobre esse caso, porque o HTTP foi 200.
+ESPERAS_RESPOSTA_ILEGIVEL_SEGUNDOS = (10, 30)
+
+
 def ler_json(resposta: requests.Response) -> Any:
     """Converte a resposta em JSON, explicando o que veio quando não é JSON.
 
@@ -158,9 +171,10 @@ def ler_json(resposta: requests.Response) -> Any:
     except ValueError as erro:
         tipo = resposta.headers.get("Content-Type", "desconhecido")
         trecho = resposta.text[:300].strip() or "(resposta vazia)"
-        raise RespostaInvalidaError(
-            f"A API respondeu HTTP {resposta.status_code} com conteúdo que não é JSON "
-            f"(Content-Type: {tipo}). Início da resposta: {trecho!r}"
+        raise RespostaIlegivelError(
+            f"A API respondeu HTTP {resposta.status_code} com conteúdo que não pôde ser lido "
+            f"como JSON ({erro}; Content-Type: {tipo}; {len(resposta.content)} bytes). "
+            f"Início da resposta: {trecho!r}"
         ) from erro
 
     # O Open-Meteo também avisa erros com um JSON {"error": true, "reason": "..."}.
@@ -190,9 +204,20 @@ def extrair_clima(
     }
 
     logger.info("Open-Meteo: %d município(s), %s a %s", len(lote), inicio, fim)
-    resposta = sessao.get(URL_OPEN_METEO, params=parametros, timeout=TIMEOUT_SEGUNDOS)
-    resposta.raise_for_status()
-    dados = ler_json(resposta)
+    esperas = list(ESPERAS_RESPOSTA_ILEGIVEL_SEGUNDOS)
+    while True:
+        resposta = sessao.get(URL_OPEN_METEO, params=parametros, timeout=TIMEOUT_SEGUNDOS)
+        resposta.raise_for_status()
+        try:
+            dados = ler_json(resposta)
+            break
+        except RespostaIlegivelError as erro:
+            # Resposta cortada no meio da transferência: repito a mesma chamada.
+            if not esperas:
+                raise
+            espera = esperas.pop(0)
+            logger.warning("Resposta ilegível (%s). Nova tentativa em %d s.", erro, espera)
+            time.sleep(espera)
 
     # Com um único ponto a API devolve um objeto; com vários, uma lista. Eu
     # padronizo sempre como lista para o resto do código não ter dois caminhos.

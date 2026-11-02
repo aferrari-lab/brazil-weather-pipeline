@@ -337,6 +337,7 @@ class _RespostaTexto:
     status_code = 200
     headers = {"Content-Type": "text/html"}
     text = "<html>Servico temporariamente indisponivel</html>"
+    content = text.encode()
 
     def raise_for_status(self):
         pass
@@ -345,13 +346,52 @@ class _RespostaTexto:
         raise ValueError("Expecting value: line 1 column 1 (char 0)")
 
 
-def test_resposta_que_nao_e_json_explica_o_que_chegou():
+@pytest.fixture
+def sem_espera(monkeypatch):
+    esperas = []
+    monkeypatch.setattr(clima.time, "sleep", esperas.append)
+    return esperas
+
+
+def test_resposta_que_nao_e_json_explica_o_que_chegou(sem_espera):
     class SessaoComAviso(_SessaoFalsa):
         def get(self, url, params, timeout):
+            self.chamadas.append(params)
             return _RespostaTexto()
 
+    sessao = SessaoComAviso()
     with pytest.raises(clima.RespostaInvalidaError, match="text/html.*indisponivel"):
-        clima.extrair_clima(MUNICIPIOS.head(1), INICIO, FIM, SessaoComAviso())
+        clima.extrair_clima(MUNICIPIOS.head(1), INICIO, FIM, sessao)
+    # Tentou 3 vezes, com as esperas configuradas, antes de desistir.
+    assert len(sessao.chamadas) == 3
+    assert sem_espera == list(clima.ESPERAS_RESPOSTA_ILEGIVEL_SEGUNDOS)
+
+
+class _RespostaCortada(_RespostaTexto):
+    """JSON válido no começo, quebrado no meio, como chega numa transferência cortada."""
+
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    text = '[{"latitude":-21.47,"longitude":-41.09,"daily":{"time":["2026-10-26"'
+    content = text.encode()
+
+    def json(self):
+        raise ValueError("Expecting ',' delimiter: line 1 column 27676 (char 27675)")
+
+
+def test_resposta_cortada_e_repetida_ate_vir_inteira(sem_espera):
+    class SessaoInstavel(_SessaoFalsa):
+        def get(self, url, params, timeout):
+            if len(self.chamadas) == 0:
+                self.chamadas.append(params)
+                return _RespostaCortada()
+            return super().get(url, params, timeout)
+
+    sessao = SessaoInstavel()
+    dados = clima.extrair_clima(MUNICIPIOS.head(2), INICIO, FIM, sessao)
+
+    assert len(dados) == 2
+    assert len(sessao.chamadas) == 2  # a cortada e a repetição que deu certo
+    assert sem_espera == [clima.ESPERAS_RESPOSTA_ILEGIVEL_SEGUNDOS[0]]
 
 
 def test_erro_informado_pela_api_vira_excecao_clara():
