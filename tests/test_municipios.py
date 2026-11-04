@@ -164,3 +164,25 @@ def test_salvar_grava_no_lake_e_le_de_volta(tmp_path):
     lido = ler_parquet(CAMINHO_MUNICIPIOS, lake_local)
 
     assert lido["codigo_ibge"].tolist() == df["codigo_ibge"].tolist()
+
+
+def test_retry_after_longo_e_limitado():
+    # Quando a cota acaba, a API pode pedir horas de espera no Retry-After. Sem
+    # limite, a tarefa ficava dormindo até estourar o tempo máximo do Airflow.
+    from ingestion.municipios import (
+        ESPERA_MAXIMA_RETRY_AFTER_SEGUNDOS,
+        RetryComEsperaMaxima,
+    )
+
+    class RespostaFalsa:
+        def __init__(self, valor):
+            self.headers = {"Retry-After": valor}
+
+        def getheader(self, nome, padrao=None):
+            return self.headers.get(nome, padrao)
+
+    retry = RetryComEsperaMaxima(total=3, respect_retry_after_header=True)
+
+    assert retry.get_retry_after(RespostaFalsa("7200")) == ESPERA_MAXIMA_RETRY_AFTER_SEGUNDOS
+    assert retry.get_retry_after(RespostaFalsa("30")) == 30
+    assert isinstance(retry.new(), RetryComEsperaMaxima)  # as novas tentativas mantêm o limite

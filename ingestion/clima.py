@@ -44,9 +44,10 @@ logger = logging.getLogger(__name__)
 URL_OPEN_METEO = "https://archive-api.open-meteo.com/v1/archive"
 FONTE_OPEN_METEO = "open_meteo_archive_v1"
 
-# Timeout maior que o do IBGE: uma chamada com muitos municípios e quase dois
-# anos de dados demora mais para a API montar.
-TIMEOUT_SEGUNDOS = 90
+# Tempo máximo para conectar e para esperar cada pedaço da resposta. A leitura é
+# longa porque um lote de histórico (10 municípios × quase 2 anos) às vezes demora
+# mais de 90 s para a API montar e enviar.
+TIMEOUT_SEGUNDOS = (10, 180)
 
 # Variáveis diárias que eu busco. Mantenho no máximo 10, porque a API cobra mais
 # "peso" por chamada quando passa disso. O foco do projeto é temperatura.
@@ -154,9 +155,20 @@ class RespostaIlegivelError(RespostaInvalidaError):
     """
 
 
-# Esperas antes de repetir uma chamada cuja resposta veio ilegível: 3 tentativas
-# no total. O retry do requests não cobre esse caso, porque o HTTP foi 200.
+# Esperas antes de repetir uma chamada que falhou no meio da transferência: 3
+# tentativas no total. Cobre o que o retry do requests não cobre: resposta HTTP 200
+# que chega cortada ou ilegível, e conexão que cai ou trava enquanto o corpo da
+# resposta ainda está chegando (o retry do requests só age antes disso).
 ESPERAS_RESPOSTA_ILEGIVEL_SEGUNDOS = (10, 30)
+
+# Falhas de transferência que vale repetir. O RetryError (tentativas do requests
+# esgotadas, em geral o limite da API) fica de fora de propósito: repetir não adianta.
+FALHAS_DE_TRANSFERENCIA = (
+    RespostaIlegivelError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
 
 
 def ler_json(resposta: requests.Response) -> Any:
@@ -188,8 +200,13 @@ def extrair_clima(
     inicio: date,
     fim: date,
     sessao: requests.Session,
+    repetir_ilegivel: bool = True,
 ) -> list[dict[str, Any]]:
-    """Busca o clima diário de um lote de municípios em uma única chamada."""
+    """Busca o clima diário de um lote de municípios em uma única chamada.
+
+    Com repetir_ilegivel=False, uma resposta ilegível sobe na hora (sem repetir a
+    chamada): é o modo usado ao dividir um lote para isolar um município problemático.
+    """
     # A API aceita vários pontos de uma vez, com latitudes e longitudes separadas
     # por vírgula. Arredondo para 4 casas (~11 m), precisão de sobra para clima.
     parametros = {
@@ -206,17 +223,22 @@ def extrair_clima(
     logger.info("Open-Meteo: %d município(s), %s a %s", len(lote), inicio, fim)
     esperas = list(ESPERAS_RESPOSTA_ILEGIVEL_SEGUNDOS)
     while True:
-        resposta = sessao.get(URL_OPEN_METEO, params=parametros, timeout=TIMEOUT_SEGUNDOS)
-        resposta.raise_for_status()
         try:
+            resposta = sessao.get(URL_OPEN_METEO, params=parametros, timeout=TIMEOUT_SEGUNDOS)
+            resposta.raise_for_status()
             dados = ler_json(resposta)
             break
-        except RespostaIlegivelError as erro:
-            # Resposta cortada no meio da transferência: repito a mesma chamada.
-            if not esperas:
+        except FALHAS_DE_TRANSFERENCIA as erro:
+            # Conexão caiu, travou ou a resposta veio cortada: repito a mesma chamada.
+            if not esperas or (isinstance(erro, RespostaIlegivelError) and not repetir_ilegivel):
                 raise
             espera = esperas.pop(0)
-            logger.warning("Resposta ilegível (%s). Nova tentativa em %d s.", erro, espera)
+            logger.warning(
+                "Falha na transferência (%s: %s). Nova tentativa em %d s.",
+                type(erro).__name__,
+                erro,
+                espera,
+            )
             time.sleep(espera)
 
     # Com um único ponto a API devolve um objeto; com vários, uma lista. Eu
@@ -231,6 +253,49 @@ def extrair_clima(
             f"Pedi {len(lote)} município(s) e a API devolveu {len(dados)} resultado(s)."
         )
     return dados
+
+
+def extrair_dividindo(
+    lote: pd.DataFrame,
+    inicio: date,
+    fim: date,
+    sessao: requests.Session,
+    repetir_ilegivel: bool = True,
+) -> tuple[pd.DataFrame, list[dict[str, Any]], list[int]]:
+    """Busca um lote; se a resposta vier ilegível mesmo repetindo, divide o lote ao meio.
+
+    Já aconteceu de a API devolver, para um lote, um JSON quebrado sempre no mesmo
+    ponto: o defeito está nos dados de algum município, e repetir não resolve.
+    Dividindo o lote em metades (e as metades em metades), os municípios bons são
+    carregados e só o problemático fica de fora, com aviso no log. Ele volta a ser
+    pedido na próxima execução, porque continua pendente no bronze.
+
+    Devolve (municípios carregados, respostas deles, códigos dos que ficaram de fora).
+    """
+    try:
+        return lote, extrair_clima(lote, inicio, fim, sessao, repetir_ilegivel), []
+    except RespostaIlegivelError:
+        if len(lote) == 1:
+            municipio = lote.iloc[0]
+            logger.error(
+                "%s (%s, código %s): a API devolve resposta ilegível para este município "
+                "de %s a %s. Ele fica de fora desta carga e será pedido de novo na próxima.",
+                municipio.get("nome", "município"),
+                municipio["uf_sigla"],
+                municipio["codigo_ibge"],
+                inicio,
+                fim,
+            )
+            return lote.iloc[0:0], [], [int(municipio["codigo_ibge"])]
+        meio = len(lote) // 2
+        logger.warning(
+            "Lote de %d municípios com resposta ilegível: divido em dois para isolar o problema.",
+            len(lote),
+        )
+        # Nas metades não repito a resposta ilegível: o defeito é dos dados, não da rede.
+        lote_a, resp_a, fora_a = extrair_dividindo(lote.iloc[:meio], inicio, fim, sessao, False)
+        lote_b, resp_b, fora_b = extrair_dividindo(lote.iloc[meio:], inicio, fim, sessao, False)
+        return pd.concat([lote_a, lote_b]), resp_a + resp_b, fora_a + fora_b
 
 
 def transformar_clima(
@@ -448,12 +513,14 @@ def carregar_clima_uf(
                 time.sleep(pausa_pendente)
 
             extraido_em = datetime.now(UTC)
-            respostas = extrair_clima(lote, inicio_grupo, fim, sessao)
-            pausa_pendente = pausa_do_lote(len(lote), inicio_grupo, fim, pausa_segundos)
+            lote, respostas, fora = extrair_dividindo(lote, inicio_grupo, fim, sessao)
+            pausa_pendente = pausa_do_lote(len(lote) + len(fora), inicio_grupo, fim, pausa_segundos)
             # Conto a chamada logo depois de feita, para o log registrar até as
             # chamadas de um lote que falhar mais adiante.
             if execucao:
                 execucao.chamadas_api += 1
+            if lote.empty:
+                continue  # nenhum município do lote veio legível
             df = transformar_clima(respostas, lote, extraido_em)
             validar_clima(df, len(lote), inicio_grupo, fim)
 

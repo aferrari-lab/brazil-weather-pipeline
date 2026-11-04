@@ -95,6 +95,23 @@ COLUNAS_MUNICIPIOS = [
 CAMINHO_MUNICIPIOS = "bronze/municipios/municipios.parquet"
 
 
+# Espera máxima aceita do cabeçalho Retry-After. Quando a cota da API acaba, ela
+# pode pedir horas de espera; sem limite, a tarefa ficava parada dormindo até
+# estourar o tempo máximo do Airflow. Com o limite, as tentativas se esgotam em
+# poucos minutos e a carga termina como "limite_api", continuando no dia seguinte.
+ESPERA_MAXIMA_RETRY_AFTER_SEGUNDOS = 120
+
+
+class RetryComEsperaMaxima(Retry):
+    """Retry que respeita o Retry-After da API, mas nunca espera mais que o limite."""
+
+    def get_retry_after(self, response):
+        espera = super().get_retry_after(response)
+        if espera is None:
+            return None
+        return min(espera, ESPERA_MAXIMA_RETRY_AFTER_SEGUNDOS)
+
+
 def criar_sessao(tentativas: int = 3, backoff: float = 1.0) -> requests.Session:
     """Cria uma sessão HTTP com retry automático e backoff exponencial.
 
@@ -104,8 +121,9 @@ def criar_sessao(tentativas: int = 3, backoff: float = 1.0) -> requests.Session:
     # Só repito erros que costumam ser passageiros: 429 (limite de requisições)
     # e falhas do servidor. Um 404, por exemplo, não melhora tentando de novo.
     # Com backoff=1, as esperas entre tentativas crescem de forma exponencial,
-    # e se a API mandar o cabeçalho Retry-After, eu respeito o tempo que ela pede.
-    retry = Retry(
+    # e se a API mandar o cabeçalho Retry-After, eu respeito o tempo que ela pede,
+    # até o limite de ESPERA_MAXIMA_RETRY_AFTER_SEGUNDOS.
+    retry = RetryComEsperaMaxima(
         total=tentativas,
         backoff_factor=backoff,
         status_forcelist=(429, 500, 502, 503, 504),

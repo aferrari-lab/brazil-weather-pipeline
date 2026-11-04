@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 
 import pandas as pd
 import pytest
+import requests
 
 from ingestion import clima
 from ingestion.lake import ConfigLake, ler_parquet
@@ -434,3 +435,73 @@ def test_pausa_proporcional_ao_peso_do_lote():
     lote_cheio = clima.tamanho_do_lote(*historico)
     assert clima.pausa_do_lote(lote_cheio, *historico, 60) <= 60
     assert clima.pausa_do_lote(5000, dia, dia, 60) == 60  # nunca passa da pausa cheia
+
+
+def test_conexao_que_cai_no_meio_e_repetida(sem_espera):
+    # O corpo da resposta parou de chegar e estourou o tempo de leitura: o retry do
+    # requests não cobre esse caso, então a ingestão repete a chamada.
+    class SessaoQueTrava(_SessaoFalsa):
+        def get(self, url, params, timeout):
+            if len(self.chamadas) == 0:
+                self.chamadas.append(params)
+                raise requests.exceptions.ConnectionError("Read timed out.")
+            return super().get(url, params, timeout)
+
+    sessao = SessaoQueTrava()
+
+    assert len(clima.extrair_clima(MUNICIPIOS.head(2), INICIO, FIM, sessao)) == 2
+    assert len(sessao.chamadas) == 2
+
+
+def test_limite_da_api_nao_e_repetido(sem_espera):
+    # RetryError é o requests avisando que esgotou as tentativas (em geral, a cota
+    # da API acabou): repetir não adianta, e a carga precisa parar com limite_api.
+    class SessaoSemCota(_SessaoFalsa):
+        def get(self, url, params, timeout):
+            self.chamadas.append(params)
+            raise requests.exceptions.RetryError("too many 429 error responses")
+
+    sessao = SessaoSemCota()
+    with pytest.raises(requests.exceptions.RetryError):
+        clima.extrair_clima(MUNICIPIOS.head(1), INICIO, FIM, sessao)
+    assert len(sessao.chamadas) == 1
+    assert sem_espera == []
+
+
+# --- Lote com um município cuja resposta vem sempre quebrada ---
+class _SessaoComMunicipioDefeituoso(_SessaoFalsa):
+    """Responde normal, menos quando o lote inclui a latitude defeituosa: aí o JSON
+    vem quebrado sempre no mesmo ponto, como no defeito real da API."""
+
+    def __init__(self, latitude_defeituosa):
+        super().__init__()
+        self.latitude_defeituosa = f"{latitude_defeituosa:.4f}"
+
+    def get(self, url, params, timeout):
+        if self.latitude_defeituosa in params["latitude"].split(","):
+            self.chamadas.append(params)
+            return _RespostaCortada()
+        return super().get(url, params, timeout)
+
+
+def test_lote_com_resposta_sempre_quebrada_e_dividido_ate_isolar_o_municipio(sem_espera):
+    lote = MUNICIPIOS
+    defeituoso = lote.iloc[1]
+    sessao = _SessaoComMunicipioDefeituoso(defeituoso["latitude"])
+
+    carregados, respostas, fora = clima.extrair_dividindo(lote, INICIO, FIM, sessao)
+
+    assert fora == [int(defeituoso["codigo_ibge"])]
+    assert len(carregados) == len(respostas) == 2
+    assert defeituoso["codigo_ibge"] not in carregados["codigo_ibge"].tolist()
+
+
+def test_carga_segue_sem_o_municipio_defeituoso(sem_espera, tmp_path):
+    lake = _lake(tmp_path)
+    defeituoso = SP.iloc[0]
+    sessao = _SessaoComMunicipioDefeituoso(defeituoso["latitude"])
+
+    linhas = clima.carregar_clima_uf(SP, INICIO, FIM, sessao, lake, pausa_segundos=0)
+
+    dias = (FIM - INICIO).days + 1
+    assert linhas == (len(SP) - 1) * dias
